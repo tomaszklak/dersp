@@ -293,7 +293,7 @@ async fn read_server_info<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(), Er
 async fn read_client_info<R: AsyncRead + Unpin>(
     mut reader: &mut R,
     secret_key: &SecretKey,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<PublicKey> {
     match read_frame(&mut reader)
         .await
         .map_err(|e| anyhow!("Frame reading failed: {e}"))?
@@ -317,13 +317,13 @@ async fn read_client_info<R: AsyncRead + Unpin>(
                         version: 2,
                         meshkey: "".to_owned()
                     }
-            )
+            );
+            return Ok(client_pk);
         }
         (frame_type, _) => {
             anyhow::bail!("Unexpected message: {frame_type:?}");
         }
     };
-    Ok(())
 }
 
 async fn write_client_key<W: AsyncWrite + Unpin>(
@@ -398,16 +398,16 @@ async fn finalize_http_phase<RW: AsyncWrite + AsyncRead + Unpin>(
 pub async fn handle_handshake<RW: AsyncWrite + AsyncRead + Unpin>(
     mut rw: &mut RW,
     sk: &SecretKey,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<PublicKey> {
     finalize_http_phase(&mut rw).await?;
 
     write_server_key(&mut rw, &sk).await?;
 
-    read_client_info(&mut rw, &sk).await?;
+    let pk = read_client_info(&mut rw, &sk).await?;
 
     write_server_info(&mut rw).await?;
 
-    Ok(())
+    Ok(pk)
 }
 
 fn validate_headers(headers: &[httparse::Header]) -> anyhow::Result<()> {
@@ -466,7 +466,9 @@ async fn read_server_key<R: AsyncRead + Unpin>(reader: &mut R) -> Result<PublicK
 /// 0:1 - frame type
 /// 1:4 - frame length
 /// 5:frame_length+4 - frame content
-async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(FrameType, Vec<u8>), Error> {
+pub async fn read_frame<R: AsyncRead + Unpin>(
+    reader: &mut R,
+) -> anyhow::Result<(FrameType, Vec<u8>)> {
     // Read header
     let mut buf = [0_u8; 1];
 
@@ -474,10 +476,7 @@ async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(FrameType, 
     let frame_type = FrameType::try_from(if let Some(b) = buf.first() {
         *b
     } else {
-        return Err(Box::new(IoError::new(
-            ErrorKind::InvalidData,
-            "invalid buffer",
-        )));
+        return Err(anyhow::anyhow!("invalid buffer"));
     })?;
 
     let mut buf = [0_u8; 4];
@@ -490,7 +489,7 @@ async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(FrameType, 
 }
 
 /// Writes a DERP frame to a writer
-async fn write_frame<W: AsyncWrite + Unpin>(
+pub async fn write_frame<W: AsyncWrite + Unpin>(
     writer: &mut W,
     frame_type: FrameType,
     data: Vec<u8>,
@@ -502,6 +501,18 @@ async fn write_frame<W: AsyncWrite + Unpin>(
     buf.write_all(&data).await?;
     writer.write_all(&buf).await?;
     Ok(())
+}
+
+#[derive(Debug)]
+pub struct SendPacket<'a> {
+    pub target: PublicKey,
+    pub payload: &'a [u8],
+}
+
+pub fn parse_send_packet(buf: &[u8]) -> anyhow::Result<SendPacket> {
+    let target: PublicKey = buf.get(..32).unwrap().try_into()?;
+    let payload = buf.get(32..).unwrap();
+    Ok(SendPacket { target, payload })
 }
 
 #[cfg(test)]
