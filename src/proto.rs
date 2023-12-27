@@ -402,8 +402,19 @@ pub async fn handle_handshake<RW: AsyncWrite + AsyncRead + Unpin>(mut rw: &mut R
     Ok(())
 }
 
-fn validate_headers(_headers: &[httparse::Header]) -> anyhow::Result<()> {
-    // TODO
+fn validate_headers(headers: &[httparse::Header]) -> anyhow::Result<()> {
+    for h in headers {
+        if h.name == "Upgrade" {
+            let value = std::str::from_utf8(h.value)?.to_ascii_lowercase();
+            ensure!(value == "websocket" || value == "derp", "Unexpected Upgrade value {value}");
+        }
+
+        if h.name == "Connection" {
+            let value = std::str::from_utf8(h.value)?.to_ascii_lowercase();
+            ensure!(value == "upgrade", "Unexpected Connection value {value}");
+        }
+    }
+
     Ok(())
 }
 
