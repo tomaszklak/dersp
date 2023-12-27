@@ -272,9 +272,7 @@ pub async fn exchange_keys<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     mut writer: W,
     secret_key: SecretKey,
 ) -> Result<(), Error> {
-    println!("^^^^^^^");
     let server_key = read_server_key(&mut reader).await?;
-    println!("!!!!!!!");
     write_client_key(&mut writer, secret_key, server_key).await?;
     Ok(())
 }
@@ -292,20 +290,27 @@ async fn read_server_info<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(), Er
     Ok(())
 }
 
-async fn read_client_info<R: AsyncRead + Unpin>(mut reader: &mut R, secret_key: &SecretKey) -> anyhow::Result<()> {
-    let client_info = match dbg!(read_frame(&mut reader).await).map_err(|e| anyhow!("{e}"))? {
+async fn read_client_info<R: AsyncRead + Unpin>(
+    mut reader: &mut R,
+    secret_key: &SecretKey,
+) -> anyhow::Result<()> {
+    match read_frame(&mut reader)
+        .await
+        .map_err(|e| anyhow!("Frame reading failed: {e}"))?
+    {
         (FrameType::ClientInfo, buf) => {
             let client_pk = buf.get(..32).unwrap();
             let nonce = buf.get(32..(32 + 24)).unwrap();
             let cipher_text = buf.get((32 + 24)..).unwrap();
             let client_pk: PublicKey = client_pk.try_into()?;
+            debug!("Client public key: {client_pk:?}");
             let b = SalsaBox::new(&client_pk.into(), &secret_key.into());
             let plain_text = b.decrypt(nonce.try_into()?, cipher_text)?;
-            println!("{}", std::str::from_utf8(&plain_text).unwrap());
+            trace!("plaintext: {:?}", std::str::from_utf8(&plain_text));
 
             let client_info: ClientInfoPayload =
                 serde_json::from_slice(&plain_text).with_context(|| "Client info parsing")?;
-            println!("client info: '{client_info:?}'");
+            debug!("client info: {client_info:?}");
             ensure!(
                 client_info
                     == ClientInfoPayload {
@@ -390,7 +395,10 @@ async fn finalize_http_phase<RW: AsyncWrite + AsyncRead + Unpin>(
     Ok(())
 }
 
-pub async fn handle_handshake<RW: AsyncWrite + AsyncRead + Unpin>(mut rw: &mut RW, sk: &SecretKey) -> anyhow::Result<()> {
+pub async fn handle_handshake<RW: AsyncWrite + AsyncRead + Unpin>(
+    mut rw: &mut RW,
+    sk: &SecretKey,
+) -> anyhow::Result<()> {
     finalize_http_phase(&mut rw).await?;
 
     write_server_key(&mut rw, &sk).await?;
@@ -406,7 +414,10 @@ fn validate_headers(headers: &[httparse::Header]) -> anyhow::Result<()> {
     for h in headers {
         if h.name == "Upgrade" {
             let value = std::str::from_utf8(h.value)?.to_ascii_lowercase();
-            ensure!(value == "websocket" || value == "derp", "Unexpected Upgrade value {value}");
+            ensure!(
+                value == "websocket" || value == "derp",
+                "Unexpected Upgrade value {value}"
+            );
         }
 
         if h.name == "Connection" {
@@ -455,9 +466,7 @@ async fn read_server_key<R: AsyncRead + Unpin>(reader: &mut R) -> Result<PublicK
 /// 0:1 - frame type
 /// 1:4 - frame length
 /// 5:frame_length+4 - frame content
-async fn read_frame<R: AsyncRead + Unpin>(
-    reader: &mut R,
-) -> Result<(FrameType, Vec<u8>), Error> {
+async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(FrameType, Vec<u8>), Error> {
     // Read header
     let mut buf = [0_u8; 1];
 

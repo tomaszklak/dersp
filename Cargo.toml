@@ -9,6 +9,7 @@ edition = "2021"
 anyhow = "1.0.77"
 base64 = "0.13"
 crypto_box = { version = "0.8.2", features = ["std"] }
+env_logger = "0.10.1"
 futures-channel = "0.3.30"
 futures-util = "0.3.30"
 h2 = "0.4.0"
