@@ -7,7 +7,7 @@
 //! Packets are sent to and received from main derp task via sender/receiver channels
 
 use crate::crypto::{PublicKey, SecretKey, KEY_SIZE};
-use anyhow::{anyhow, ensure};
+use anyhow::{anyhow, ensure, Context};
 use crypto_box::{
     aead::{Aead, AeadCore},
     PublicKey as BoxPublicKey, SalsaBox,
@@ -280,7 +280,7 @@ pub async fn exchange_keys<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 }
 
 /// Reads the first frame from the server and checks if it's a ServerInfo frame
-pub async fn read_server_info<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(), Error> {
+async fn read_server_info<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(), Error> {
     let (frame_type, mut _bytes) = read_frame(reader).await?;
     if frame_type != FrameType::ServerInfo {
         return Err(Box::new(IoError::new(
@@ -289,6 +289,35 @@ pub async fn read_server_info<R: AsyncRead + Unpin>(reader: &mut R) -> Result<()
         )));
     }
 
+    Ok(())
+}
+
+async fn read_client_info<R: AsyncRead + Unpin>(mut reader: &mut R, secret_key: &SecretKey) -> anyhow::Result<()> {
+    let client_info = match dbg!(read_frame(&mut reader).await).map_err(|e| anyhow!("{e}"))? {
+        (FrameType::ClientInfo, buf) => {
+            let client_pk = buf.get(..32).unwrap();
+            let nonce = buf.get(32..(32 + 24)).unwrap();
+            let cipher_text = buf.get((32 + 24)..).unwrap();
+            let client_pk: PublicKey = client_pk.try_into()?;
+            let b = SalsaBox::new(&client_pk.into(), &secret_key.into());
+            let plain_text = b.decrypt(nonce.try_into()?, cipher_text)?;
+            println!("{}", std::str::from_utf8(&plain_text).unwrap());
+
+            let client_info: ClientInfoPayload =
+                serde_json::from_slice(&plain_text).with_context(|| "Client info parsing")?;
+            println!("client info: '{client_info:?}'");
+            ensure!(
+                client_info
+                    == ClientInfoPayload {
+                        version: 2,
+                        meshkey: "".to_owned()
+                    }
+            )
+        }
+        (frame_type, _) => {
+            anyhow::bail!("Unexpected message: {frame_type:?}");
+        }
+    };
     Ok(())
 }
 
@@ -319,14 +348,14 @@ async fn write_client_key<W: AsyncWrite + Unpin>(
     write_frame(writer, FrameType::ClientInfo, buf).await
 }
 
-pub async fn write_server_info<W: AsyncWrite + Unpin>(writer: &mut W) -> anyhow::Result<()> {
+async fn write_server_info<W: AsyncWrite + Unpin>(writer: &mut W) -> anyhow::Result<()> {
     write_frame(writer, FrameType::ServerInfo, Vec::new())
         .await
         .map_err(|e| anyhow!("{e}"))?;
     Ok(())
 }
 
-pub async fn write_server_key<W: AsyncWrite + Unpin>(
+async fn write_server_key<W: AsyncWrite + Unpin>(
     writer: &mut W,
     secret_key: &SecretKey,
 ) -> anyhow::Result<()> {
@@ -340,7 +369,7 @@ pub async fn write_server_key<W: AsyncWrite + Unpin>(
         .map_err(|e| anyhow!("{}", e))
 }
 
-pub async fn finalize_http_phase<RW: AsyncWrite + AsyncRead + Unpin>(
+async fn finalize_http_phase<RW: AsyncWrite + AsyncRead + Unpin>(
     rw: &mut RW,
 ) -> anyhow::Result<()> {
     let mut buf = [0u8; UPGRADE_MSG_SIZE];
@@ -357,6 +386,18 @@ pub async fn finalize_http_phase<RW: AsyncWrite + AsyncRead + Unpin>(
     let _body = &buf[body_start..];
     // TODO: do something with body?
     rw.write(b"HTTP/1.1 200 OK\r\n\r\n").await?;
+
+    Ok(())
+}
+
+pub async fn handle_handshake<RW: AsyncWrite + AsyncRead + Unpin>(mut rw: &mut RW, sk: &SecretKey) -> anyhow::Result<()> {
+    finalize_http_phase(&mut rw).await?;
+
+    write_server_key(&mut rw, &sk).await?;
+
+    read_client_info(&mut rw, &sk).await?;
+
+    write_server_info(&mut rw).await?;
 
     Ok(())
 }
@@ -403,7 +444,7 @@ async fn read_server_key<R: AsyncRead + Unpin>(reader: &mut R) -> Result<PublicK
 /// 0:1 - frame type
 /// 1:4 - frame length
 /// 5:frame_length+4 - frame content
-pub async fn read_frame<R: AsyncRead + Unpin>(
+async fn read_frame<R: AsyncRead + Unpin>(
     reader: &mut R,
 ) -> Result<(FrameType, Vec<u8>), Error> {
     // Read header
@@ -429,7 +470,7 @@ pub async fn read_frame<R: AsyncRead + Unpin>(
 }
 
 /// Writes a DERP frame to a writer
-pub async fn write_frame<W: AsyncWrite + Unpin>(
+async fn write_frame<W: AsyncWrite + Unpin>(
     writer: &mut W,
     frame_type: FrameType,
     data: Vec<u8>,
