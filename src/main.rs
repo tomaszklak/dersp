@@ -3,55 +3,25 @@ mod proto;
 
 use anyhow::{anyhow, bail, ensure, Context};
 
-use crypto_box::{
-    aead::{Aead, AeadCore},
-    SalsaBox,
-};
-use serde::{Deserialize, Serialize};
+use crypto_box::{aead::Aead, SalsaBox};
 use std::net::SocketAddr;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::crypto::{PublicKey, SecretKey};
-use crate::proto::{read_frame, write_frame, FrameType, MAGIC};
-
-const UPGRADE_MSG_SIZE: usize = 4096;
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ClientInfoPayload {
-    version: u32,
-    #[serde(rename = "meshKey")]
-    meshkey: String,
-}
+use crate::proto::{
+    finalize_http_phase, read_frame, write_server_info, write_server_key, FrameType,
+};
+use crate::{
+    crypto::{PublicKey, SecretKey},
+    proto::ClientInfoPayload,
+};
 
 async fn handle_client(mut socket: TcpStream, peer_addr: SocketAddr) -> anyhow::Result<()> {
     println!("Got connection from: {peer_addr:?}");
-    let mut buf = [0u8; UPGRADE_MSG_SIZE];
-    let n = socket.read(&mut buf).await?; // TODO: timeout
-    ensure!(n > 0, "empty initiall message");
-    ensure!(n < UPGRADE_MSG_SIZE, "initial message too big");
-
-    let mut headers = [httparse::EMPTY_HEADER; 16];
-    let mut req = httparse::Request::new(&mut headers);
-    let body_start = req.parse(&buf)?; // TODO: add context
-    ensure!(body_start.is_complete());
-    validate_headers(&headers)?;
-    let body_start = body_start.unwrap();
-    let body = &buf[body_start..];
-    // TODO: do something with body?
-
-    println!("hello: {headers:?}");
-    socket.write(b"HTTP/1.1 200 OK\r\n\r\n").await?;
+    finalize_http_phase(&mut socket).await?;
 
     let sk = SecretKey::gen();
-    let pk = sk.public();
-    let mut buf = vec![];
-    buf.extend_from_slice(&MAGIC);
-    buf.extend_from_slice(&pk);
-
-    write_frame(&mut socket, FrameType::ServerKey, buf)
-        .await
-        .map_err(|e| anyhow!("{}", e))?;
+    write_server_key(&mut socket, &sk).await?;
+    // server key end
 
     let client_info = match dbg!(read_frame(&mut socket).await).map_err(|e| anyhow!("{e}"))? {
         (FrameType::ClientInfo, buf) => {
@@ -66,21 +36,27 @@ async fn handle_client(mut socket: TcpStream, peer_addr: SocketAddr) -> anyhow::
             let client_info: ClientInfoPayload =
                 serde_json::from_slice(&plain_text).with_context(|| "Client info parsing")?;
             println!("client info: '{client_info:?}'");
+            ensure!(
+                client_info
+                    == ClientInfoPayload {
+                        version: 2,
+                        meshkey: "".to_owned()
+                    }
+            )
         }
         (frame_type, _) => {
             bail!("Unexpected message: {frame_type:?}");
         }
     };
 
-    write_frame(&mut socket, FrameType::ServerInfo, Vec::new())
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
+    // client info end
 
-    Ok(())
-}
+    write_server_info(&mut socket).await?;
 
-fn validate_headers(_headers: &[httparse::Header]) -> anyhow::Result<()> {
-    // TODO
+    // server info end
+
+    // TODO read / write loop
+
     Ok(())
 }
 

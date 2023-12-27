@@ -7,12 +7,14 @@
 //! Packets are sent to and received from main derp task via sender/receiver channels
 
 use crate::crypto::{PublicKey, SecretKey, KEY_SIZE};
+use anyhow::{anyhow, ensure};
 use crypto_box::{
     aead::{Aead, AeadCore},
     PublicKey as BoxPublicKey, SalsaBox,
 };
 use log::{debug, trace};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
+use serde::{Deserialize, Serialize};
 use std::{
     convert::TryFrom,
     error::Error as StdError,
@@ -31,8 +33,10 @@ use tokio::{
 #[cfg(windows)]
 use static_assertions::const_assert;
 
+const UPGRADE_MSG_SIZE: usize = 4096;
+
 /// 8 bytes of magic message prefix: `DERP🔑`
-pub const MAGIC: [u8; 8] = [0x44, 0x45, 0x52, 0x50, 0xF0, 0x9F, 0x94, 0x91];
+const MAGIC: [u8; 8] = [0x44, 0x45, 0x52, 0x50, 0xF0, 0x9F, 0x94, 0x91];
 
 /// Default value for connecting to server attempt
 pub const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -63,6 +67,13 @@ const_assert!(
         && ((TCP_KEEPALIVE_INTERVAL.as_secs()) as u32 <= (i8::MAX as u32))
         && ((TCP_KEEPALIVE_COUNT) <= (i8::MAX as u32))
 );
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientInfoPayload {
+    pub version: u32,
+    #[serde(rename = "meshKey")]
+    pub meshkey: String,
+}
 
 #[repr(u8)]
 #[derive(
@@ -306,6 +317,53 @@ async fn write_client_key<W: AsyncWrite + Unpin>(
     buf.write_all(&nonce).await?;
     buf.write_all(&ciphertext).await?;
     write_frame(writer, FrameType::ClientInfo, buf).await
+}
+
+pub async fn write_server_info<W: AsyncWrite + Unpin>(writer: &mut W) -> anyhow::Result<()> {
+    write_frame(writer, FrameType::ServerInfo, Vec::new())
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
+    Ok(())
+}
+
+pub async fn write_server_key<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    secret_key: &SecretKey,
+) -> anyhow::Result<()> {
+    let pk = secret_key.public();
+    let mut buf = vec![];
+    buf.extend_from_slice(&MAGIC);
+    buf.extend_from_slice(&pk);
+
+    write_frame(writer, FrameType::ServerKey, buf)
+        .await
+        .map_err(|e| anyhow!("{}", e))
+}
+
+pub async fn finalize_http_phase<RW: AsyncWrite + AsyncRead + Unpin>(
+    rw: &mut RW,
+) -> anyhow::Result<()> {
+    let mut buf = [0u8; UPGRADE_MSG_SIZE];
+    let n = rw.read(&mut buf).await?; // TODO: timeout
+    ensure!(n > 0, "empty initiall message");
+    ensure!(n < UPGRADE_MSG_SIZE, "initial message too big");
+
+    let mut headers = [httparse::EMPTY_HEADER; 16];
+    let mut req = httparse::Request::new(&mut headers);
+    let body_start = req.parse(&buf)?; // TODO: add context
+    ensure!(body_start.is_complete());
+    validate_headers(&headers)?;
+    let body_start = body_start.unwrap();
+    let _body = &buf[body_start..];
+    // TODO: do something with body?
+    rw.write(b"HTTP/1.1 200 OK\r\n\r\n").await?;
+
+    Ok(())
+}
+
+fn validate_headers(_headers: &[httparse::Header]) -> anyhow::Result<()> {
+    // TODO
+    Ok(())
 }
 
 async fn read_server_key<R: AsyncRead + Unpin>(reader: &mut R) -> Result<PublicKey, Error> {
