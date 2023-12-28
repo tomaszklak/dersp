@@ -91,7 +91,7 @@ pub struct Frame<T> {
     pub inner: SizeWrapper<u32, T>,
 }
 
-#[derive(Default, Decode, Encode)]
+#[derive(Clone, Default, Decode, Encode)]
 pub struct ServerKey {
     pub magic: [u8; 8],
     pub public_key: PublicKey,
@@ -121,14 +121,14 @@ pub struct ClientInfoPayload {
     pub meshkey: String,
 }
 
-#[derive(Decode, Encode)]
-pub struct ClientInfoFrame {
+#[derive(Clone, Decode, Encode)]
+pub struct ClientInfo {
     pub public_key: PublicKey,
     pub nonce: [u8; 24],
     pub cipher_text: Vec<u8>,
 }
 
-impl ClientInfoFrame {
+impl ClientInfo {
     pub fn complete(&self, sk: &SecretKey) -> anyhow::Result<CompleteClientInfo> {
         let b = SalsaBox::new(&self.public_key.into(), &sk.into());
         let plain_text = b.decrypt(
@@ -164,5 +164,59 @@ impl ServerInfo {
             frame_type: FrameType::ServerInfo,
             inner: SizeWrapper::new(std::mem::take(self)),
         }
+    }
+}
+
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_server_key_frame() {
+        let data = &[
+            1, 0, 0, 0, 40, 0x44, 0x45, 0x52, 0x50, 0xF0, 0x9F, 0x94, 0x91, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let server_key = ServerKey::new(PublicKey::new([0; 32]));
+
+        let mut encoded_buf = Vec::new();
+        server_key.clone().frame().encode(&mut encoded_buf).unwrap();
+        assert_eq!(&encoded_buf, data);
+
+        let decoded_server_key = Frame::<ServerKey>::decode(&mut &data[..])
+            .unwrap()
+            .inner
+            .into_inner();
+        assert_eq!(decoded_server_key.magic, server_key.magic);
+        assert_eq!(decoded_server_key.public_key, server_key.public_key);
+    }
+
+    #[test]
+    fn test_client_info() {
+        let data = &[
+            2, 0, 0, 0, 58, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+            5, 5, 5, 5, 5, 5, 5, 5, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+            2, 2, 2, 12, 12,
+        ];
+        let client_info = ClientInfo {
+            public_key: PublicKey::new([5; 32]),
+            nonce: [2; 24],
+            cipher_text: vec![0xC, 0xC],
+        };
+
+        let mut encoded_buf = Vec::new();
+        let frame = Frame {
+            frame_type: FrameType::ClientInfo,
+            inner: SizeWrapper::new(client_info.clone()),
+        };
+        frame.encode(&mut encoded_buf).unwrap();
+        assert_eq!(&encoded_buf, data);
+
+        let decoded_client_info = Frame::<ClientInfo>::decode(&mut &data[..])
+            .unwrap()
+            .inner
+            .into_inner();
+        assert_eq!(decoded_client_info.public_key, client_info.public_key);
+        assert_eq!(decoded_client_info.nonce, client_info.nonce);
+        assert_eq!(decoded_client_info.cipher_text, client_info.cipher_text);
     }
 }

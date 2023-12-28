@@ -1,4 +1,4 @@
-use self::data::{ClientInfoFrame, ClientInfoPayload, Frame, FrameType, ServerInfo, ServerKey};
+use self::data::{ClientInfo, ClientInfoPayload, Frame, FrameType, ServerInfo, ServerKey};
 
 use crate::crypto::SecretKey;
 use anyhow::{anyhow, ensure};
@@ -83,8 +83,9 @@ async fn read_client_info<R: AsyncRead + Unpin>(
     reader.read(&mut buf).await?;
 
     let client_info = match FrameType::get_frame_type(&buf) {
-        FrameType::ClientInfo => Frame::<ClientInfoFrame>::decode(&mut buf.as_slice())
-            .map_err(|_| anyhow!("Decode error")),
+        FrameType::ClientInfo => {
+            Frame::<ClientInfo>::decode(&mut buf.as_slice()).map_err(|_| anyhow!("Decode error"))
+        }
         ty => anyhow::bail!("Unexpected message: {:?}", ty),
     }?;
     let client_info = client_info.inner.into_inner();
