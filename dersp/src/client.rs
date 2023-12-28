@@ -1,6 +1,6 @@
 use crate::{
     crypto::PublicKey,
-    proto_old::{parse_send_packet, read_frame, write_frame, FrameType},
+    proto_old::{parse_send_packet, read_frame, write_frame, write_peer_present, FrameType},
     service::ServiceCommand,
 };
 use anyhow::Result;
@@ -79,9 +79,8 @@ impl Client {
 
             match next_frame {
                 Ok((FrameType::SendPacket, buf)) => {
-                    debug!("send packet buf size: {}", buf.len());
                     let send_packet = parse_send_packet(&buf)?;
-                    debug!("send packet: {send_packet:?}");
+                    debug!("send_packet: {send_packet:?}");
                     command_sender
                         .send(ServiceCommand::SendPacket(
                             send_packet.target,
@@ -100,6 +99,13 @@ impl Client {
                             ))
                             .await?;
                     }
+                }
+                Ok((FrameType::PeerPresent, buf)) => {
+                    let client_pk: PublicKey = buf.try_into().unwrap();
+                    command_sender
+                        .send(ServiceCommand::PeerPresent(client_pk, our_sink.clone()))
+                        .await
+                        .unwrap();
                 }
                 Ok((frame_type, _buf)) => todo!("frame type: {frame_type:?}"),
                 Err(e) => {
@@ -124,10 +130,10 @@ impl Client {
     ) -> anyhow::Result<()> {
         loop {
             match r.recv().await {
-                Some(WriteLoopCommands::SendPacket(buf)) => {
+                Some(WriteLoopCommands::SendPacket(target_pk, buf)) => {
                     trace!("Will send {} bytes to {pk}", buf.len());
                     let mut data = vec![];
-                    data.extend_from_slice(&pk);
+                    data.extend_from_slice(&target_pk);
                     data.extend_from_slice(&buf);
                     write_frame(&mut w, FrameType::RecvPacket, data)
                         .await
@@ -136,6 +142,10 @@ impl Client {
                 Some(WriteLoopCommands::Stop) => {
                     debug!("{pk} write loop stopping");
                     return Ok(());
+                }
+                Some(WriteLoopCommands::PeerPresent(pk)) => {
+                    trace!("Sending peer present with {pk}");
+                    write_peer_present(&mut w, &pk).await.unwrap();
                 }
                 None => {
                     debug!("{pk} write loop stopping (no more commands)");
@@ -146,7 +156,9 @@ impl Client {
     }
 }
 
+#[derive(Debug)]
 pub enum WriteLoopCommands {
-    SendPacket(Vec<u8>),
+    SendPacket(PublicKey, Vec<u8>),
+    PeerPresent(PublicKey),
     Stop,
 }

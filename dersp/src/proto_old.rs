@@ -116,7 +116,7 @@ pub enum FrameType {
     /// PeerPresent is like PeerGone, but for other
     /// members of the DERP region when they're meshed up together.
     /// 32B pub key of peer that's connected
-    PeerPersistent = 0x09,
+    PeerPresent = 0x09,
     /// WatchConns is how one DERP node in a regional mesh
     /// subscribes to the others in the region.
     /// There's no payload. If the sender doesn't have permission, the connection
@@ -264,11 +264,11 @@ pub async fn exchange_keys<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     mut writer: W,
     secret_key: SecretKey,
     meshkey: Option<&str>,
-) -> Result<(), Error> {
+) -> Result<PublicKey, Error> {
     let server_key = read_server_key(&mut reader).await?;
     debug!("server key: {server_key}");
     write_client_key(&mut writer, secret_key, server_key, meshkey).await?;
-    Ok(())
+    Ok(server_key)
 }
 
 /// Reads the first frame from the server and checks if it's a ServerInfo frame
@@ -317,6 +317,16 @@ async fn write_client_key<W: AsyncWrite + Unpin>(
     buf.write_all(&nonce).await?;
     buf.write_all(&ciphertext).await?;
     write_frame(writer, FrameType::ClientInfo, buf).await
+}
+
+pub async fn write_peer_present<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    peer_pk: &PublicKey,
+    // TODO: optional ip + port
+) -> anyhow::Result<()> {
+    write_frame(writer, FrameType::PeerPresent, peer_pk.to_vec())
+        .await
+        .map_err(|e| anyhow!("{e}"))
 }
 
 async fn read_server_key<R: AsyncRead + Unpin>(reader: &mut R) -> Result<PublicKey, Error> {
