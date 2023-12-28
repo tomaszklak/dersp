@@ -1,4 +1,4 @@
-use self::data::{ClientInfo, ClientInfoPayload, Frame, FrameType, ServerInfo, ServerKey};
+use self::data::{ClientInfo, Frame, FrameType, ServerInfo, ServerKey};
 
 use crate::crypto::{PublicKey, SecretKey};
 use anyhow::{anyhow, ensure};
@@ -12,16 +12,16 @@ const UPGRADE_MSG_SIZE: usize = 4096;
 pub async fn handle_handshake<RW: AsyncWrite + AsyncRead + Unpin>(
     mut rw: &mut RW,
     sk: &SecretKey,
-) -> anyhow::Result<PublicKey> {
+) -> anyhow::Result<(PublicKey, Option<String>)> {
     finalize_http_phase(&mut rw).await?;
 
     write_server_key(&mut rw, &sk).await?;
 
-    let pk = read_client_info(&mut rw, &sk).await?;
+    let (pk, meshkey) = read_client_info(&mut rw, &sk).await?;
 
     write_server_info(&mut rw).await?;
 
-    Ok(pk)
+    Ok((pk, meshkey))
 }
 
 async fn finalize_http_phase<RW: AsyncWrite + AsyncRead + Unpin>(
@@ -77,7 +77,7 @@ async fn write_server_key<W: AsyncWrite + Unpin>(
 async fn read_client_info<R: AsyncRead + Unpin>(
     reader: &mut R,
     sk: &SecretKey,
-) -> anyhow::Result<PublicKey> {
+) -> anyhow::Result<(PublicKey, Option<String>)> {
     // TODO use only one prealocated buffer for read / write
     let mut buf = [0; 1024];
     reader.read(&mut buf).await?;
@@ -94,15 +94,15 @@ async fn read_client_info<R: AsyncRead + Unpin>(
     let complete_info = client_info.complete(sk)?;
 
     debug!("client info: {:?}", complete_info.payload);
-    ensure!(
-        complete_info.payload
-            == ClientInfoPayload {
-                version: 2,
-                meshkey: "".to_owned()
-            }
-    );
 
-    Ok(complete_info.public_key)
+    Ok((
+        complete_info.public_key,
+        if complete_info.payload.meshkey.is_empty() {
+            None
+        } else {
+            Some(complete_info.payload.meshkey)
+        },
+    ))
 }
 
 async fn write_server_info<W: AsyncWrite + Unpin>(writer: &mut W) -> anyhow::Result<()> {

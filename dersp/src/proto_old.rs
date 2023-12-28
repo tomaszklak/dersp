@@ -263,14 +263,15 @@ pub async fn exchange_keys<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     mut reader: R,
     mut writer: W,
     secret_key: SecretKey,
+    meshkey: Option<&str>,
 ) -> Result<(), Error> {
     let server_key = read_server_key(&mut reader).await?;
-    write_client_key(&mut writer, secret_key, server_key).await?;
+    write_client_key(&mut writer, secret_key, server_key, meshkey).await?;
     Ok(())
 }
 
 /// Reads the first frame from the server and checks if it's a ServerInfo frame
-async fn read_server_info<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(), Error> {
+pub async fn read_server_info<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(), Error> {
     let (frame_type, mut _bytes) = read_frame(reader).await?;
     if frame_type != FrameType::ServerInfo {
         return Err(Box::new(IoError::new(
@@ -286,6 +287,7 @@ async fn write_client_key<W: AsyncWrite + Unpin>(
     writer: &mut W,
     secret_key: SecretKey,
     server_key: PublicKey,
+    meshkey: Option<&str>,
 ) -> Result<(), Error> {
     let server_key = server_key.into();
     let secret_key = secret_key.into();
@@ -295,7 +297,11 @@ async fn write_client_key<W: AsyncWrite + Unpin>(
 
     let mut rng = rand_core::OsRng;
     let nonce = SalsaBox::generate_nonce(&mut rng);
-    let plain_text = b"{\"version\": 2, \"meshKey\": \"\"}";
+    let plain_text = if let Some(meshkey) = meshkey {
+        todo!()
+    } else {
+        b"{\"version\": 2, \"meshKey\": \"\"}"
+    };
     let b = SalsaBox::new(&server_key, &secret_key);
 
     let ciphertext = b
@@ -488,13 +494,13 @@ mod tests {
         let server_key1 = SecretKey::new([1_u8; KEY_SIZE]).public();
         let secret_key2 = SecretKey::new([2_u8; KEY_SIZE]);
         let server_key2 = SecretKey::new([3_u8; KEY_SIZE]).public();
-        write_client_key(&mut buf1, secret_key1, server_key1)
+        write_client_key(&mut buf1, secret_key1, server_key1, None)
             .await
             .unwrap();
-        write_client_key(&mut buf2, secret_key1, server_key1)
+        write_client_key(&mut buf2, secret_key1, server_key1, None)
             .await
             .unwrap();
-        write_client_key(&mut buf3, secret_key2, server_key2)
+        write_client_key(&mut buf3, secret_key2, server_key2, None)
             .await
             .unwrap();
         // nonce is generated everytime write_client_key is called, therefore the result must be
@@ -521,12 +527,12 @@ mod tests {
         match error {
             true => assert_eq!(
                 true,
-                exchange_keys(reader, &mut writer, secret_key)
+                exchange_keys(reader, &mut writer, secret_key, None)
                     .await
                     .is_err()
             ),
             false => {
-                exchange_keys(reader, &mut writer, secret_key)
+                exchange_keys(reader, &mut writer, secret_key, None)
                     .await
                     .unwrap();
                 assert_eq!(KEY_MSG_SIZE, writer.len());

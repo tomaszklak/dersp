@@ -20,43 +20,55 @@ pub struct Client {
     r: OwnedReadHalf,
     w: OwnedWriteHalf,
     pk: PublicKey,
+    can_mesh: bool,
 }
 
 impl Client {
-    pub fn new(socket: TcpStream, pk: PublicKey) -> Result<Self> {
+    pub fn new(socket: TcpStream, pk: PublicKey, can_mesh: bool) -> Result<Self> {
         let peer = socket.peer_addr()?;
         let (r, w) = socket.into_split();
-        Ok(Self { peer, r, w, pk })
+        Ok(Self {
+            peer,
+            r,
+            w,
+            pk,
+            can_mesh,
+        })
     }
 
     pub async fn run(
         self,
         command_sender: Sender<ServiceCommand>,
     ) -> Result<Sender<WriteLoopCommands>> {
-        // TODO read / write loop
-
-        // TODO: spawn write loop...
-
         let w = self.w;
-        let s = Self::start_write_loop(w, self.pk);
+        let sink = Self::start_write_loop(w, self.pk);
         let r = self.r;
-        Self::start_read_loop(r, self.pk, command_sender);
+        Self::start_read_loop(r, self.pk, command_sender, self.can_mesh, sink.clone());
 
-        Ok(s)
+        Ok(sink)
     }
 
     pub fn start_read_loop(
         r: OwnedReadHalf,
         pk: PublicKey,
         command_sender: Sender<ServiceCommand>,
+        can_mesh: bool,
+        our_sink: Sender<WriteLoopCommands>,
     ) {
-        spawn(Self::read_loop(r, pk, command_sender));
+        spawn(async move {
+            if let Err(e) = Self::read_loop(r, pk, command_sender, can_mesh, our_sink).await {
+                warn!("Read loop of {pk} failed");
+                // TODO: close whole client?
+            }
+        });
     }
 
     pub async fn read_loop(
         mut r: OwnedReadHalf,
         pk: PublicKey,
         command_sender: Sender<ServiceCommand>,
+        can_mesh: bool,
+        our_sink: Sender<WriteLoopCommands>,
     ) -> anyhow::Result<()> {
         loop {
             match read_frame(&mut r).await {
@@ -70,6 +82,18 @@ impl Client {
                             send_packet.payload.to_vec(),
                         ))
                         .await?;
+                }
+                Ok((FrameType::WatchConns, _)) => {
+                    if !can_mesh {
+                        // TODO: close this connection
+                    } else {
+                        command_sender
+                            .send(ServiceCommand::SubscribeForPeerChanges(
+                                pk,
+                                our_sink.clone(),
+                            ))
+                            .await?;
+                    }
                 }
                 Ok((frame_type, _buf)) => todo!("frame type: {frame_type:?}"),
                 Err(e) => {
