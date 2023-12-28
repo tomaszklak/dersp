@@ -3,26 +3,14 @@ mod crypto;
 mod proto;
 mod service;
 
+mod proto_old;
+
 use crate::service::{DerpService, Service};
 use std::sync::Arc;
-use std::net::SocketAddr;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::Mutex;
-use crate::proto::handle_handshake;
 
-use log::{debug, info, warn};
-
-use crate::crypto::SecretKey;
-
-async fn handle_client(mut socket: TcpStream, peer_addr: SocketAddr) -> anyhow::Result<()> {
-    debug!("Got connection from: {peer_addr:?}");
-    let sk = SecretKey::gen();
-    handle_handshake(&mut socket, &sk).await?;
-
-    // TODO read / write loop
-
-    Ok(())
-}
+use log::info;
 
 #[tokio::main]
 pub async fn main() -> anyhow::Result<()> {

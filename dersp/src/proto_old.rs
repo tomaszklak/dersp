@@ -6,9 +6,7 @@
 //!
 //! Packets are sent to and received from main derp task via sender/receiver channels
 
-use codec::{Decode, Encode};
 use crate::crypto::{PublicKey, SecretKey, KEY_SIZE};
-use crate::protocol::data::{Frame, ServerKey, FrameType as FrameTypeNew, ClientInfoFrame, ClientInfoPayload as ClientInfoPayloadNew, ServerInfo};
 use anyhow::{anyhow, ensure, Context};
 use crypto_box::{
     aead::{Aead, AeadCore},
@@ -16,7 +14,6 @@ use crypto_box::{
 };
 use log::{debug, trace};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
-use serde::{Deserialize, Serialize};
 use std::{
     convert::TryFrom,
     error::Error as StdError,
@@ -69,8 +66,6 @@ const_assert!(
         && ((TCP_KEEPALIVE_INTERVAL.as_secs()) as u32 <= (i8::MAX as u32))
         && ((TCP_KEEPALIVE_COUNT) <= (i8::MAX as u32))
 );
-
-
 
 #[repr(u8)]
 #[derive(
@@ -287,71 +282,6 @@ async fn read_server_info<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(), Er
     Ok(())
 }
 
-async fn read_client_info<R: AsyncRead + Unpin>(
-    reader: &mut R,
-    sk: &SecretKey,
-) -> anyhow::Result<PublicKey> {
-    // TODO use only one prealocated buffer for read / write
-    let mut buf = [0; 1024];
-    reader.read(&mut buf).await?;
-
-    let client_info = match FrameTypeNew::get_frame_type(&buf) {
-        FrameTypeNew::ClientInfo => Frame::<ClientInfoFrame>::decode(&mut buf.as_slice()).map_err(|_| anyhow!("Decode error")),
-        ty => anyhow::bail!("Unexpected message: {:?}", ty),
-    }?;
-    let client_info = client_info.inner.into_inner();
-    debug!("Client public key: {:?}", client_info.public_key);
-
-    let complete_info = client_info.complete(sk)?;
-
-    debug!("client info: {:?}", complete_info.payload);
-    ensure!(
-        complete_info.payload
-            == ClientInfoPayloadNew {
-                version: 2,
-                meshkey: "".to_owned()
-            }
-    );
-
-    Ok(complete_info.public_key)
-}
-
-// async fn read_client_info<R: AsyncRead + Unpin>(
-//     mut reader: &mut R,
-//     secret_key: &SecretKey,
-// ) -> anyhow::Result<()> {
-//     match read_frame(&mut reader)
-//         .await
-//         .map_err(|e| anyhow!("Frame reading failed: {e}"))?
-//     {
-//         (FrameType::ClientInfo, buf) => {
-//             let client_pk = buf.get(..32).unwrap();
-//             let nonce = buf.get(32..(32 + 24)).unwrap();
-//             let cipher_text = buf.get((32 + 24)..).unwrap();
-//             let client_pk: PublicKey = client_pk.try_into()?;
-//             debug!("Client public key: {client_pk:?}");
-//             let b = SalsaBox::new(&client_pk.into(), &secret_key.into());
-//             let plain_text = b.decrypt(nonce.try_into()?, cipher_text)?;
-//             trace!("plaintext: {:?}", std::str::from_utf8(&plain_text));
-
-//             let client_info: ClientInfoPayload =
-//                 serde_json::from_slice(&plain_text).with_context(|| "Client info parsing")?;
-//             debug!("client info: {client_info:?}");
-//             ensure!(
-//                 client_info
-//                     == ClientInfoPayload {
-//                         version: 2,
-//                         meshkey: "".to_owned()
-//                     }
-//             )
-//         }
-//         (frame_type, _) => {
-//             anyhow::bail!("Unexpected message: {frame_type:?}");
-//         }
-//     };
-//     Ok(())
-// }
-
 async fn write_client_key<W: AsyncWrite + Unpin>(
     writer: &mut W,
     secret_key: SecretKey,
@@ -379,84 +309,6 @@ async fn write_client_key<W: AsyncWrite + Unpin>(
     write_frame(writer, FrameType::ClientInfo, buf).await
 }
 
-async fn write_server_info<W: AsyncWrite + Unpin>(writer: &mut W) -> anyhow::Result<()> {
-    let mut buf = Vec::new();
-    ServerInfo::default().frame().encode(&mut buf)?;
-    writer.write_all(&buf).await.map_err(|e| anyhow!("{e}"))
-}
-
-// async fn write_server_info<W: AsyncWrite + Unpin>(writer: &mut W) -> anyhow::Result<()> {
-//     write_frame(writer, FrameType::ServerInfo, Vec::new())
-//         .await
-//         .map_err(|e| anyhow!("{e}"))?;
-//     Ok(())
-// }
-
-async fn write_server_key<W: AsyncWrite + Unpin>(
-    writer: &mut W,
-    secret_key: &SecretKey,
-) -> anyhow::Result<()> {
-    let mut server_key = ServerKey::new(secret_key.public());
-    let mut buf = Vec::new();
-    server_key.frame().encode(&mut buf)?;
-    writer.write_all(&buf).await.map_err(|e| anyhow!("{}", e))
-}
-
-async fn finalize_http_phase<RW: AsyncWrite + AsyncRead + Unpin>(
-    rw: &mut RW,
-) -> anyhow::Result<()> {
-    let mut buf = [0u8; UPGRADE_MSG_SIZE];
-    let n = rw.read(&mut buf).await?; // TODO: timeout
-    ensure!(n > 0, "empty initiall message");
-    ensure!(n < UPGRADE_MSG_SIZE, "initial message too big");
-
-    let mut headers = [httparse::EMPTY_HEADER; 16];
-    let mut req = httparse::Request::new(&mut headers);
-    let body_start = req.parse(&buf)?; // TODO: add context
-    ensure!(body_start.is_complete());
-    validate_headers(&headers)?;
-    let body_start = body_start.unwrap();
-    let _body = &buf[body_start..];
-    // TODO: do something with body?
-    rw.write(b"HTTP/1.1 200 OK\r\n\r\n").await?;
-
-    Ok(())
-}
-
-pub async fn handle_handshake<RW: AsyncWrite + AsyncRead + Unpin>(
-    mut rw: &mut RW,
-    sk: &SecretKey,
-) -> anyhow::Result<PublicKey> {
-    finalize_http_phase(&mut rw).await?;
-
-    write_server_key(&mut rw, &sk).await?;
-
-    let pk = read_client_info(&mut rw, &sk).await?;
-
-    write_server_info(&mut rw).await?;
-
-    Ok(pk)
-}
-
-fn validate_headers(headers: &[httparse::Header]) -> anyhow::Result<()> {
-    for h in headers {
-        if h.name == "Upgrade" {
-            let value = std::str::from_utf8(h.value)?.to_ascii_lowercase();
-            ensure!(
-                value == "websocket" || value == "derp",
-                "Unexpected Upgrade value {value}"
-            );
-        }
-
-        if h.name == "Connection" {
-            let value = std::str::from_utf8(h.value)?.to_ascii_lowercase();
-            ensure!(value == "upgrade", "Unexpected Connection value {value}");
-        }
-    }
-
-    Ok(())
-}
-
 async fn read_server_key<R: AsyncRead + Unpin>(reader: &mut R) -> Result<PublicKey, Error> {
     let (frame_type, mut bytes) = read_frame(reader).await?;
     if frame_type != FrameType::ServerKey {
@@ -477,13 +329,14 @@ async fn read_server_key<R: AsyncRead + Unpin>(reader: &mut R) -> Result<PublicK
             "server key should start with MAGIC sting",
         )));
     }
+    Ok(PublicKey::default())
 
-    <PublicKey as TryFrom<Vec<u8>>>::try_from(bytes).map_err(|_| -> Error {
-        Box::new(IoError::new(
-            ErrorKind::InvalidData,
-            "invalid server public key",
-        ))
-    })
+    // <PublicKey as TryFrom<Vec<u8>>>::try_from(bytes).map_err(|_| -> Error {
+    //     Box::new(IoError::new(
+    //         ErrorKind::InvalidData,
+    //         "invalid server public key",
+    //     ))
+    // })
 }
 
 // TODO: Check if this approach is performant enough.
