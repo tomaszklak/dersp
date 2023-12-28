@@ -5,7 +5,7 @@ use log::{debug, info, warn};
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::crypto::{PublicKey, SecretKey};
+use crate::crypto::SecretKey;
 use crate::proto::handle_handshake;
 
 async fn handle_client(mut socket: TcpStream, peer_addr: SocketAddr) -> anyhow::Result<()> {

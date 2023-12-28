@@ -1,5 +1,6 @@
 //! Network order decoding of types.
 use std::convert::Infallible;
+use std::fmt::Debug;
 use std::mem;
 
 use crate::{u24, Ignore, Opaque, SizeWrapper};
@@ -127,9 +128,16 @@ impl<T: Decode> Decode for Vec<T> {
     }
 }
 
-impl<Size: Into<usize> + Decode, T: Decode> Decode for SizeWrapper<Size, T> {
+
+
+// !!!!!!
+// This will panic if size of Size is bigger than size of usize
+impl<Size: TryInto<usize> + Decode, T: Decode> Decode for SizeWrapper<Size, T> 
+where
+    <Size as TryInto<usize>>::Error: Debug,
+{
     fn decode<R: ReadBuffer>(read_buffer: &mut R) -> Result<Self, R::Error> {
-        let size = Size::decode(read_buffer)?.into();
+        let size = Size::decode(read_buffer)?.try_into().unwrap();
 
         let left = &mut read_buffer.fill_buf(size)?;
 
@@ -140,6 +148,22 @@ impl<Size: Into<usize> + Decode, T: Decode> Decode for SizeWrapper<Size, T> {
         } else {
             Err(DecodeError.into())
         }
+    }
+}
+
+impl Decode for [u8; 8] {
+    fn decode<R: ReadBuffer>(read_buffer: &mut R) -> Result<Self, R::Error> {
+        let mut array = [0; 8];
+        array.copy_from_slice(read_buffer.fill_buf(8)?);
+        Ok(array)
+    }
+}
+
+impl Decode for [u8; 24] {
+    fn decode<R: ReadBuffer>(read_buffer: &mut R) -> Result<Self, R::Error> {
+        let mut array = [0; 24];
+        array.copy_from_slice(read_buffer.fill_buf(24)?);
+        Ok(array)
     }
 }
 
