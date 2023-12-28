@@ -4,7 +4,7 @@ use std::fmt::Debug;
 use std::mem;
 use std::slice;
 
-use crate::{u24, Ignore, Opaque, SizeWrapper};
+use crate::{Ignore, Opaque, SizeWrapper};
 
 /// The error returned by a slice when it is full and no more data can be encoded into it.
 #[derive(Debug, PartialEq, Eq)]
@@ -77,7 +77,7 @@ impl WriteBuffer for Vec<u8> {
     }
 }
 
-/// An interface for types that could represent sizes in the TLS protocol.
+/// An interface for types that could represent sizes.
 pub trait DataSize: TryFrom<usize> + Encode {
     /// The number of bytes this type uses on the wire.
     ///
@@ -88,12 +88,9 @@ pub trait DataSize: TryFrom<usize> + Encode {
 
 impl DataSize for u8 {}
 impl DataSize for u16 {}
-impl DataSize for u24 {
-    const BYTE_SIZE: usize = 3;
-}
 impl DataSize for u32 {}
 
-/// An interface for types that can be encoded in network order, for use in the TLS protocol.
+/// An interface for types that can be encoded in network order.
 ///
 /// There is a derive macro provided in `codec_derive` that automatically generates `Encode`
 /// implementations for custom structs and enums.
@@ -115,13 +112,6 @@ impl Encode for u16 {
     fn encode<W: WriteBuffer>(&self, write_buffer: &mut W) -> Result<usize, W::Error> {
         write_buffer.fill_from(&self.to_be_bytes())?;
         Ok(2)
-    }
-}
-
-impl Encode for u24 {
-    fn encode<W: WriteBuffer>(&self, write_buffer: &mut W) -> Result<usize, W::Error> {
-        write_buffer.fill_from(&self.0.to_be_bytes()[1..4])?;
-        Ok(3)
     }
 }
 

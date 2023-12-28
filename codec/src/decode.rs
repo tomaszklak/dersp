@@ -3,7 +3,7 @@ use std::convert::Infallible;
 use std::fmt::Debug;
 use std::mem;
 
-use crate::{u24, Ignore, Opaque, SizeWrapper};
+use crate::{Ignore, Opaque, SizeWrapper};
 
 /// The error returned by a read buffer when it has insufficient bytes.
 #[derive(Debug)]
@@ -46,8 +46,7 @@ impl ReadBuffer for &[u8] {
     }
 }
 
-/// An interface for types that can be decoded from network ordered bytes, for use in the TLS
-/// protocol.
+/// An interface for types that can be decoded from network ordered bytes
 ///
 /// There is a derive macro provided in `codec_derive` that automatically generates
 /// implementations for custom structs and enums.
@@ -68,14 +67,6 @@ impl Decode for u16 {
         read_buffer
             .fill_buf(2)
             .map(|buf| (u16::from(buf[0]) << 8) + u16::from(buf[1]))
-    }
-}
-
-impl Decode for u24 {
-    fn decode<R: ReadBuffer>(read_buffer: &mut R) -> Result<Self, R::Error> {
-        read_buffer.fill_buf(3).map(|buf| {
-            u24((u32::from(buf[0]) << 16) + (u32::from(buf[1]) << 8) + u32::from(buf[2]))
-        })
     }
 }
 
@@ -128,16 +119,15 @@ impl<T: Decode> Decode for Vec<T> {
     }
 }
 
-
-
-// !!!!!!
-// This will panic if size of Size is bigger than size of usize
-impl<Size: TryInto<usize> + Decode, T: Decode> Decode for SizeWrapper<Size, T> 
+// This will fail if size of Size is bigger than size of usize
+impl<Size: TryInto<usize> + Decode, T: Decode> Decode for SizeWrapper<Size, T>
 where
     <Size as TryInto<usize>>::Error: Debug,
 {
     fn decode<R: ReadBuffer>(read_buffer: &mut R) -> Result<Self, R::Error> {
-        let size = Size::decode(read_buffer)?.try_into().unwrap();
+        let size = Size::decode(read_buffer)?
+            .try_into()
+            .map_err(|_| DecodeError)?;
 
         let left = &mut read_buffer.fill_buf(size)?;
 

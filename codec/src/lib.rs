@@ -1,5 +1,4 @@
-//! Utilities for decoding and encoding TLS data types from and to network order.
-use std::convert::TryFrom;
+//! Utilities for decoding and encoding data types from and to network order.
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
@@ -11,32 +10,6 @@ pub mod encode;
 
 pub use decode::Decode;
 pub use encode::Encode;
-
-/// A numeric type containing unsigned integer values on 24 bits that will always be decoded from
-/// or encoded to 3 bytes.
-///
-/// This is needed because the TLS protocol uses 3 byte sizes for some fields or message types.
-#[allow(non_camel_case_types)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct u24(pub u32);
-
-impl TryFrom<usize> for u24 {
-    type Error = &'static str;
-
-    fn try_from(value: usize) -> Result<Self, Self::Error> {
-        if value >= (1 << 24) {
-            Err("Value out of bounds")
-        } else {
-            Ok(Self(value as u32))
-        }
-    }
-}
-
-impl From<u24> for usize {
-    fn from(value: u24) -> usize {
-        value.0 as usize
-    }
-}
 
 /// A byte array prepended with it's size which is of type `Size`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
