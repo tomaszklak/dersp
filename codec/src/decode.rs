@@ -141,34 +141,10 @@ where
     }
 }
 
-impl Decode for [u8; 8] {
+impl<const SIZE: usize> Decode for [u8; SIZE] {
     fn decode<R: ReadBuffer>(read_buffer: &mut R) -> Result<Self, R::Error> {
-        let mut array = [0; 8];
-        array.copy_from_slice(read_buffer.fill_buf(8)?);
-        Ok(array)
-    }
-}
-
-impl Decode for [u8; 24] {
-    fn decode<R: ReadBuffer>(read_buffer: &mut R) -> Result<Self, R::Error> {
-        let mut array = [0; 24];
-        array.copy_from_slice(read_buffer.fill_buf(24)?);
-        Ok(array)
-    }
-}
-
-impl Decode for [u8; 32] {
-    fn decode<R: ReadBuffer>(read_buffer: &mut R) -> Result<Self, R::Error> {
-        let mut array = [0; 32];
-        array.copy_from_slice(read_buffer.fill_buf(32)?);
-        Ok(array)
-    }
-}
-
-impl Decode for [u8; 46] {
-    fn decode<R: ReadBuffer>(read_buffer: &mut R) -> Result<Self, R::Error> {
-        let mut array = [0; 46];
-        array.copy_from_slice(read_buffer.fill_buf(46)?);
+        let mut array = [0; SIZE];
+        array.copy_from_slice(read_buffer.fill_buf(SIZE)?);
         Ok(array)
     }
 }

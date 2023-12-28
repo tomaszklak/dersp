@@ -184,38 +184,10 @@ where
     }
 }
 
-impl Encode for [u8; 46] {
+impl<const SIZE: usize> Encode for [u8; SIZE] {
     fn encode<W: WriteBuffer>(&self, write_buffer: &mut W) -> Result<usize, W::Error> {
         write_buffer.fill_from(self)?;
-        Ok(46)
-    }
-}
-
-impl Encode for [u8; 32] {
-    fn encode<W: WriteBuffer>(&self, write_buffer: &mut W) -> Result<usize, W::Error> {
-        write_buffer.fill_from(self)?;
-        Ok(32)
-    }
-}
-
-impl Encode for [u8; 24] {
-    fn encode<W: WriteBuffer>(&self, write_buffer: &mut W) -> Result<usize, W::Error> {
-        write_buffer.fill_from(self)?;
-        Ok(24)
-    }
-}
-
-impl Encode for [u8; 8] {
-    fn encode<W: WriteBuffer>(&self, write_buffer: &mut W) -> Result<usize, W::Error> {
-        write_buffer.fill_from(self)?;
-        Ok(8)
-    }
-}
-
-impl Encode for [u8; 4] {
-    fn encode<W: WriteBuffer>(&self, write_buffer: &mut W) -> Result<usize, W::Error> {
-        write_buffer.fill_from(self)?;
-        Ok(4)
+        Ok(SIZE)
     }
 }
 
