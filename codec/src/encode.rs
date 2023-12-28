@@ -91,6 +91,7 @@ impl DataSize for u16 {}
 impl DataSize for u24 {
     const BYTE_SIZE: usize = 3;
 }
+impl DataSize for u32 {}
 
 /// An interface for types that can be encoded in network order, for use in the TLS protocol.
 ///
@@ -204,6 +205,20 @@ impl Encode for [u8; 32] {
     fn encode<W: WriteBuffer>(&self, write_buffer: &mut W) -> Result<usize, W::Error> {
         write_buffer.fill_from(self)?;
         Ok(32)
+    }
+}
+
+impl Encode for [u8; 24] {
+    fn encode<W: WriteBuffer>(&self, write_buffer: &mut W) -> Result<usize, W::Error> {
+        write_buffer.fill_from(self)?;
+        Ok(24)
+    }
+}
+
+impl Encode for [u8; 8] {
+    fn encode<W: WriteBuffer>(&self, write_buffer: &mut W) -> Result<usize, W::Error> {
+        write_buffer.fill_from(self)?;
+        Ok(8)
     }
 }
 

@@ -6,7 +6,9 @@
 //!
 //! Packets are sent to and received from main derp task via sender/receiver channels
 
+use codec::{Decode, Encode};
 use crate::crypto::{PublicKey, SecretKey, KEY_SIZE};
+use crate::protocol::data::{Frame, ServerKey, FrameType as FrameTypeNew, ClientInfoFrame, ClientInfoPayload as ClientInfoPayloadNew, ServerInfo};
 use anyhow::{anyhow, ensure, Context};
 use crypto_box::{
     aead::{Aead, AeadCore},
@@ -68,12 +70,7 @@ const_assert!(
         && ((TCP_KEEPALIVE_COUNT) <= (i8::MAX as u32))
 );
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClientInfoPayload {
-    pub version: u32,
-    #[serde(rename = "meshKey")]
-    pub meshkey: String,
-}
+
 
 #[repr(u8)]
 #[derive(
@@ -291,40 +288,69 @@ async fn read_server_info<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(), Er
 }
 
 async fn read_client_info<R: AsyncRead + Unpin>(
-    mut reader: &mut R,
-    secret_key: &SecretKey,
+    reader: &mut R,
+    sk: &SecretKey,
 ) -> anyhow::Result<PublicKey> {
-    match read_frame(&mut reader)
-        .await
-        .map_err(|e| anyhow!("Frame reading failed: {e}"))?
-    {
-        (FrameType::ClientInfo, buf) => {
-            let client_pk = buf.get(..32).unwrap();
-            let nonce = buf.get(32..(32 + 24)).unwrap();
-            let cipher_text = buf.get((32 + 24)..).unwrap();
-            let client_pk: PublicKey = client_pk.try_into()?;
-            debug!("Client public key: {client_pk:?}");
-            let b = SalsaBox::new(&client_pk.into(), &secret_key.into());
-            let plain_text = b.decrypt(nonce.try_into()?, cipher_text)?;
-            trace!("plaintext: {:?}", std::str::from_utf8(&plain_text));
+    // TODO use only one prealocated buffer for read / write
+    let mut buf = [0; 1024];
+    reader.read(&mut buf).await?;
 
-            let client_info: ClientInfoPayload =
-                serde_json::from_slice(&plain_text).with_context(|| "Client info parsing")?;
-            debug!("client info: {client_info:?}");
-            ensure!(
-                client_info
-                    == ClientInfoPayload {
-                        version: 2,
-                        meshkey: "".to_owned()
-                    }
-            );
-            return Ok(client_pk);
-        }
-        (frame_type, _) => {
-            anyhow::bail!("Unexpected message: {frame_type:?}");
-        }
-    };
+    let client_info = match FrameTypeNew::get_frame_type(&buf) {
+        FrameTypeNew::ClientInfo => Frame::<ClientInfoFrame>::decode(&mut buf.as_slice()).map_err(|_| anyhow!("Decode error")),
+        ty => anyhow::bail!("Unexpected message: {:?}", ty),
+    }?;
+    let client_info = client_info.inner.into_inner();
+    debug!("Client public key: {:?}", client_info.public_key);
+
+    let complete_info = client_info.complete(sk)?;
+
+    debug!("client info: {:?}", complete_info.payload);
+    ensure!(
+        complete_info.payload
+            == ClientInfoPayloadNew {
+                version: 2,
+                meshkey: "".to_owned()
+            }
+    );
+
+    Ok(complete_info.public_key)
 }
+
+// async fn read_client_info<R: AsyncRead + Unpin>(
+//     mut reader: &mut R,
+//     secret_key: &SecretKey,
+// ) -> anyhow::Result<()> {
+//     match read_frame(&mut reader)
+//         .await
+//         .map_err(|e| anyhow!("Frame reading failed: {e}"))?
+//     {
+//         (FrameType::ClientInfo, buf) => {
+//             let client_pk = buf.get(..32).unwrap();
+//             let nonce = buf.get(32..(32 + 24)).unwrap();
+//             let cipher_text = buf.get((32 + 24)..).unwrap();
+//             let client_pk: PublicKey = client_pk.try_into()?;
+//             debug!("Client public key: {client_pk:?}");
+//             let b = SalsaBox::new(&client_pk.into(), &secret_key.into());
+//             let plain_text = b.decrypt(nonce.try_into()?, cipher_text)?;
+//             trace!("plaintext: {:?}", std::str::from_utf8(&plain_text));
+
+//             let client_info: ClientInfoPayload =
+//                 serde_json::from_slice(&plain_text).with_context(|| "Client info parsing")?;
+//             debug!("client info: {client_info:?}");
+//             ensure!(
+//                 client_info
+//                     == ClientInfoPayload {
+//                         version: 2,
+//                         meshkey: "".to_owned()
+//                     }
+//             )
+//         }
+//         (frame_type, _) => {
+//             anyhow::bail!("Unexpected message: {frame_type:?}");
+//         }
+//     };
+//     Ok(())
+// }
 
 async fn write_client_key<W: AsyncWrite + Unpin>(
     writer: &mut W,
@@ -354,24 +380,26 @@ async fn write_client_key<W: AsyncWrite + Unpin>(
 }
 
 async fn write_server_info<W: AsyncWrite + Unpin>(writer: &mut W) -> anyhow::Result<()> {
-    write_frame(writer, FrameType::ServerInfo, Vec::new())
-        .await
-        .map_err(|e| anyhow!("{e}"))?;
-    Ok(())
+    let mut buf = Vec::new();
+    ServerInfo::default().frame().encode(&mut buf)?;
+    writer.write_all(&buf).await.map_err(|e| anyhow!("{e}"))
 }
+
+// async fn write_server_info<W: AsyncWrite + Unpin>(writer: &mut W) -> anyhow::Result<()> {
+//     write_frame(writer, FrameType::ServerInfo, Vec::new())
+//         .await
+//         .map_err(|e| anyhow!("{e}"))?;
+//     Ok(())
+// }
 
 async fn write_server_key<W: AsyncWrite + Unpin>(
     writer: &mut W,
     secret_key: &SecretKey,
 ) -> anyhow::Result<()> {
-    let pk = secret_key.public();
-    let mut buf = vec![];
-    buf.extend_from_slice(&MAGIC);
-    buf.extend_from_slice(&pk);
-
-    write_frame(writer, FrameType::ServerKey, buf)
-        .await
-        .map_err(|e| anyhow!("{}", e))
+    let mut server_key = ServerKey::new(secret_key.public());
+    let mut buf = Vec::new();
+    server_key.frame().encode(&mut buf)?;
+    writer.write_all(&buf).await.map_err(|e| anyhow!("{}", e))
 }
 
 async fn finalize_http_phase<RW: AsyncWrite + AsyncRead + Unpin>(
