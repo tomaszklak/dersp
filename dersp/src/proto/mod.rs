@@ -68,7 +68,7 @@ async fn write_server_key<W: AsyncWrite + Unpin>(
     writer: &mut W,
     secret_key: &SecretKey,
 ) -> anyhow::Result<()> {
-    let mut server_key = ServerKey::new(secret_key.public());
+    let server_key = ServerKey::new(secret_key.public());
     let mut buf = Vec::new();
     server_key.frame().encode(&mut buf)?;
     writer.write_all(&buf).await.map_err(|e| anyhow!("{}", e))

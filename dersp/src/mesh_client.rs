@@ -2,6 +2,7 @@ use std::{io::Cursor, net::SocketAddr};
 
 use anyhow::{anyhow, bail};
 use httparse::Status;
+use log::debug;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
@@ -10,7 +11,7 @@ use tokio::{
 
 use crate::{
     crypto::SecretKey,
-    proto_old::{exchange_keys, read_server_info},
+    proto_old::{exchange_keys, read_server_info, write_frame},
 };
 
 /// Max TCP packet size is 65535
@@ -50,6 +51,14 @@ impl PeerClient {
         read_server_info(&mut reader)
             .await
             .map_err(|e| anyhow!("{e}"))?;
+
+        debug!("Will register for updates of peers");
+        write_frame(&mut w, crate::proto_old::FrameType::WatchConns, Vec::new())
+            .await
+            .map_err(|e| anyhow!("{e}"))?;
+        debug!("did register for updates of peers");
+
+        loop {}
 
         Ok(())
     }

@@ -57,7 +57,7 @@ impl Client {
     ) {
         spawn(async move {
             if let Err(e) = Self::read_loop(r, pk, command_sender, can_mesh, our_sink).await {
-                warn!("Read loop of {pk} failed");
+                warn!("Read loop of {pk} failed: {e}");
                 // TODO: close whole client?
             }
         });
@@ -70,8 +70,14 @@ impl Client {
         can_mesh: bool,
         our_sink: Sender<WriteLoopCommands>,
     ) -> anyhow::Result<()> {
+        trace!("starting read loop of {pk}");
         loop {
-            match read_frame(&mut r).await {
+            let next_frame = read_frame(&mut r).await;
+            if let Ok(next_frame) = &next_frame {
+                trace!("next frame: {:?}", next_frame.0);
+            }
+
+            match next_frame {
                 Ok((FrameType::SendPacket, buf)) => {
                     debug!("send packet buf size: {}", buf.len());
                     let send_packet = parse_send_packet(&buf)?;

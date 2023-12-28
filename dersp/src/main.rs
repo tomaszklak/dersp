@@ -25,6 +25,9 @@ pub struct Config {
     /// List of other derp servers with which we should create a mesh
     #[arg(long)]
     mesh_peers: Vec<SocketAddr>,
+
+    #[arg(long, short)]
+    listen_on: String,
 }
 
 #[tokio::main]
@@ -33,8 +36,9 @@ pub async fn main() -> anyhow::Result<()> {
     let config = Config::parse();
     info!("Config: {config:?}");
 
+    let listener = TcpListener::bind(&config.listen_on).await?;
     let service: Arc<Mutex<DerpService>> = DerpService::new(config).await?;
-    let listener = TcpListener::bind("127.0.0.1:8800").await?;
+
     info!("Listening on: {:?}", listener.local_addr());
 
     service.run(listener).await

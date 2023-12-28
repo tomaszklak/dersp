@@ -2,6 +2,7 @@ use anyhow::Context;
 use codec::{Decode, Encode, SizeWrapper};
 
 use crypto_box::{aead::Aead, SalsaBox};
+use log::{debug, trace};
 use serde::{Deserialize, Serialize};
 
 use crate::crypto::{PublicKey, SecretKey};
@@ -106,10 +107,10 @@ impl ServerKey {
     }
 
     /// This consume self
-    pub fn frame(&mut self) -> Frame<ServerKey> {
+    pub fn frame(self) -> Frame<ServerKey> {
         Frame {
             frame_type: FrameType::ServerKey,
-            inner: SizeWrapper::new(std::mem::take(self)),
+            inner: SizeWrapper::new(self),
         }
     }
 }
@@ -159,10 +160,10 @@ pub struct ServerInfo {
 
 impl ServerInfo {
     // This consume self
-    pub fn frame(&mut self) -> Frame<ServerInfo> {
+    pub fn frame(self) -> Frame<ServerInfo> {
         Frame {
             frame_type: FrameType::ServerInfo,
-            inner: SizeWrapper::new(std::mem::take(self)),
+            inner: SizeWrapper::new(self),
         }
     }
 }

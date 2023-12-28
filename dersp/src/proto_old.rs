@@ -266,6 +266,7 @@ pub async fn exchange_keys<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     meshkey: Option<&str>,
 ) -> Result<(), Error> {
     let server_key = read_server_key(&mut reader).await?;
+    debug!("server key: {server_key}");
     write_client_key(&mut writer, secret_key, server_key, meshkey).await?;
     Ok(())
 }
@@ -297,11 +298,14 @@ async fn write_client_key<W: AsyncWrite + Unpin>(
 
     let mut rng = rand_core::OsRng;
     let nonce = SalsaBox::generate_nonce(&mut rng);
-    let plain_text = if let Some(meshkey) = meshkey {
-        todo!()
+    let plain_text: Vec<u8> = if let Some(meshkey) = meshkey {
+        format!("{{\"version\": 2, \"meshKey\": \"{meshkey}\"}}")
+            .as_bytes()
+            .to_vec()
     } else {
-        b"{\"version\": 2, \"meshKey\": \"\"}"
+        b"{\"version\": 2, \"meshKey\": \"\"}".to_vec()
     };
+
     let b = SalsaBox::new(&server_key, &secret_key);
 
     let ciphertext = b
@@ -335,14 +339,13 @@ async fn read_server_key<R: AsyncRead + Unpin>(reader: &mut R) -> Result<PublicK
             "server key should start with MAGIC sting",
         )));
     }
-    Ok(PublicKey::default())
 
-    // <PublicKey as TryFrom<Vec<u8>>>::try_from(bytes).map_err(|_| -> Error {
-    //     Box::new(IoError::new(
-    //         ErrorKind::InvalidData,
-    //         "invalid server public key",
-    //     ))
-    // })
+    <PublicKey as TryFrom<Vec<u8>>>::try_from(bytes).map_err(|_| -> Error {
+        Box::new(IoError::new(
+            ErrorKind::InvalidData,
+            "invalid server public key",
+        ))
+    })
 }
 
 // TODO: Check if this approach is performant enough.
@@ -365,6 +368,7 @@ pub async fn read_frame<R: AsyncRead + Unpin>(
     } else {
         return Err(anyhow::anyhow!("invalid buffer"));
     })?;
+    trace!("next frame type: {frame_type:?}");
 
     let mut buf = [0_u8; 4];
     reader.read_exact(&mut buf).await?;

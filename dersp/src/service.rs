@@ -59,7 +59,7 @@ impl DerpService {
         let client = Client::new(socket, client_pk, can_mesh)?;
         let sink = client.run(self.command_sender.clone()).await?;
 
-        info!("will insert {client_pk}");
+        info!("will insert {client_pk} to peers");
         if let Some(old) = self.peers_sinks.insert(client_pk, sink) {
             warn!("Newer client with {client_pk}: {old:?}");
         }
@@ -69,11 +69,12 @@ impl DerpService {
 
     pub async fn new(config: Config) -> anyhow::Result<Arc<Mutex<Self>>> {
         let meshkey = match config.meshkey_path {
-            Some(path) => Some(read_to_string(path)?),
+            Some(path) => Some(read_to_string(path)?.trim().to_owned()),
             None => None,
         };
         let (s, r) = channel(1);
         let service_sk = SecretKey::gen();
+        info!("Service public key: {}", service_sk.public());
 
         let ret = Arc::new(Mutex::new(Self {
             peers_sinks: Default::default(),
