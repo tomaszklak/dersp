@@ -25,6 +25,8 @@ use std::{convert::TryInto, fmt};
 use rand::prelude::*;
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 
+use codec::{Decode, Encode};
+
 /// Secret, Public and Wireguard Preshared key size in bytes
 pub const KEY_SIZE: usize = 32;
 
@@ -36,7 +38,18 @@ pub struct SecretKey([u8; KEY_SIZE]);
 
 /// Public key type
 #[derive(
-    Default, PartialOrd, Ord, PartialEq, Eq, Hash, Copy, Clone, DeserializeFromStr, SerializeDisplay,
+    Default,
+    Decode,
+    Encode,
+    PartialOrd,
+    Ord,
+    PartialEq,
+    Eq,
+    Hash,
+    Copy,
+    Clone,
+    DeserializeFromStr,
+    SerializeDisplay,
 )]
 pub struct PublicKey(pub [u8; KEY_SIZE]);
 

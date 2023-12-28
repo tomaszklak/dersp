@@ -3,11 +3,14 @@ mod crypto;
 mod proto;
 mod service;
 
+mod proto_old;
+
 use crate::service::{DerpService, Service};
-use log::info;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
+
+use log::info;
 
 #[tokio::main]
 pub async fn main() -> anyhow::Result<()> {

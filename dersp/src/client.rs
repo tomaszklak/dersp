@@ -1,6 +1,6 @@
 use crate::{
     crypto::PublicKey,
-    proto::{parse_send_packet, read_frame, write_frame, FrameType},
+    proto_old::{parse_send_packet, read_frame, write_frame, FrameType},
     service::ServiceCommand,
 };
 use anyhow::Result;
