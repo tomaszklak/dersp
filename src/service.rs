@@ -1,13 +1,13 @@
-use std::sync::Arc;
-
 use crate::{
     client::{Client, WriteLoopCommands},
-    crypto::PublicKey,
+    crypto::{PublicKey, SecretKey},
+    proto::handle_handshake,
 };
+use async_trait::async_trait;
 use log::{debug, info, warn};
-use rustc_hash::FxHashMap;
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::{
-    net::TcpStream,
+    net::{TcpListener, TcpStream},
     spawn,
     sync::{
         mpsc::{channel, Receiver, Sender},
@@ -15,9 +15,14 @@ use tokio::{
     },
 };
 
+#[async_trait]
+pub trait Service {
+    async fn run(&self, listener: TcpListener) -> anyhow::Result<()>;
+}
+
 #[derive(Debug)]
 pub struct DerpService {
-    sinks: FxHashMap<PublicKey, Sender<WriteLoopCommands>>,
+    sinks: HashMap<PublicKey, Sender<WriteLoopCommands>>,
     command_sender: Sender<ServiceCommand>,
 }
 
@@ -48,6 +53,40 @@ impl DerpService {
         spawn(command_loop(r, ret.clone()));
         ret
     }
+}
+
+#[async_trait]
+impl Service for Arc<Mutex<DerpService>> {
+    async fn run(&self, listener: TcpListener) -> anyhow::Result<()> {
+        loop {
+            if let Ok((socket, peer_addr)) = listener.accept().await {
+                let service = self.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handle_client(socket, peer_addr, service).await {
+                        warn!("Client {peer_addr:?} failed: {e:?}");
+                    }
+                });
+            }
+        }
+    }
+}
+
+async fn handle_client(
+    mut socket: TcpStream,
+    peer_addr: SocketAddr,
+    service: Arc<Mutex<DerpService>>,
+) -> anyhow::Result<()> {
+    debug!("Got connection from: {peer_addr:?}");
+    let sk = SecretKey::gen();
+    let client_pk = handle_handshake(&mut socket, &sk).await?;
+
+    service
+        .lock()
+        .await
+        .start_new_client(socket, client_pk)
+        .await?;
+
+    Ok(())
 }
 
 async fn command_loop(
