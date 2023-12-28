@@ -6,14 +6,16 @@ use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::crypto::SecretKey;
-use crate::proto::handle_handshake;
+use crate::proto::Server;
 
-async fn handle_client(mut socket: TcpStream, peer_addr: SocketAddr) -> anyhow::Result<()> {
+async fn handle_client(socket: TcpStream, peer_addr: SocketAddr) -> anyhow::Result<()> {
     debug!("Got connection from: {peer_addr:?}");
-    let sk = SecretKey::gen();
-    handle_handshake(&mut socket, &sk).await?;
+    let mut server = Server::new(socket, SecretKey::gen());
 
     // TODO read / write loop
+    // Here should the read / write be done and handle fn should take input data and
+    // return output data. Or add a connection handler with callback for output.
+    server.handle().await?;
 
     Ok(())
 }
