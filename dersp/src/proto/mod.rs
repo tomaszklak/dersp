@@ -1,8 +1,8 @@
-use self::data::{ClientInfo, Frame, FrameType, ServerInfo, ServerKey};
+use self::data::{ClientInfo, ForwardPacket, Frame, FrameType, PeerPresent, ServerInfo, ServerKey};
 
 use crate::crypto::{PublicKey, SecretKey};
 use anyhow::{anyhow, ensure};
-use codec::{Decode, Encode};
+use codec::{Decode, Encode, SizeWrapper};
 use log::debug;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -108,5 +108,29 @@ async fn read_client_info<R: AsyncRead + Unpin>(
 async fn write_server_info<W: AsyncWrite + Unpin>(writer: &mut W) -> anyhow::Result<()> {
     let mut buf = Vec::new();
     ServerInfo::default().frame().encode(&mut buf)?;
+    writer.write_all(&buf).await.map_err(|e| anyhow!("{e}"))
+}
+
+pub async fn write_peer_present<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    public_key: &PublicKey,
+) -> anyhow::Result<()> {
+    let mut buf = Vec::new();
+    let peer_present = Frame {
+        frame_type: data::FrameType::PeerPresent,
+        inner: SizeWrapper::new(PeerPresent {
+            public_key: *public_key,
+        }),
+    };
+    peer_present.encode(&mut buf)?;
+    writer.write_all(&buf).await.map_err(|e| anyhow!("{e}"))
+}
+
+pub async fn write_forward_packet<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    forward_packet: ForwardPacket,
+) -> anyhow::Result<()> {
+    let mut buf = Vec::new();
+    forward_packet.frame().encode(&mut buf)?;
     writer.write_all(&buf).await.map_err(|e| anyhow!("{e}"))
 }

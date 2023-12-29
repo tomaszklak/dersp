@@ -1,12 +1,15 @@
 use crate::{
     crypto::PublicKey,
-    proto_old::{parse_send_packet, read_frame, write_frame, write_peer_present, FrameType},
+    proto::data::{ForwardPacket, Frame, FrameType, PeerPresent, RecvPacket, SendPacket},
+    proto::{write_forward_packet, write_peer_present},
     service::ServiceCommand,
 };
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use codec::{Decode, Encode, SizeWrapper};
 use log::{debug, trace, warn};
 use std::net::SocketAddr;
 use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpStream,
@@ -71,28 +74,35 @@ impl Client {
         our_sink: Sender<WriteLoopCommands>,
     ) -> anyhow::Result<()> {
         trace!("[{pk:?}] starting read loop");
-        loop {
-            let next_frame = read_frame(&mut r).await;
-            if let Ok(next_frame) = &next_frame {
-                trace!("[{pk:?}] next frame: {:?}", next_frame.0);
-            }
+        let mut reading_buffer = [0_u8; 4096];
 
-            match next_frame {
-                Ok((FrameType::SendPacket, buf)) => {
-                    let send_packet = parse_send_packet(&buf)?;
+        loop {
+            reading_buffer.fill(0);
+            r.read(&mut reading_buffer).await?;
+
+            let frame_type = FrameType::get_frame_type(&reading_buffer);
+            trace!("[{pk:?}] next frame: {frame_type:?}");
+
+            match frame_type {
+                FrameType::SendPacket => {
+                    let send_packet = Frame::<SendPacket>::decode(&mut reading_buffer.as_slice())
+                        .map_err(|_| anyhow!("Decode error"))?
+                        .inner
+                        .into_inner();
                     let is_forward = send_packet.target != pk;
                     debug!("[{pk:?}] send_packet: {send_packet:?}, can mesh: {can_mesh}, is forward: {is_forward}");
                     command_sender
                         .send(ServiceCommand::SendPacket {
                             source: pk,
                             target: send_packet.target,
-                            payload: send_packet.payload.to_vec(),
+                            payload: send_packet.payload,
                         })
                         .await?;
                 }
-                Ok((FrameType::WatchConns, _)) => {
+
+                FrameType::WatchConns => {
                     if !can_mesh {
-                        // TODO: close this connection
+                        // RODO: close this connection
                     } else {
                         command_sender
                             .send(ServiceCommand::SubscribeForPeerChanges(
@@ -102,21 +112,26 @@ impl Client {
                             .await?;
                     }
                 }
-                Ok((FrameType::PeerPresent, buf)) => {
-                    let client_pk: PublicKey = buf.try_into().unwrap();
+
+                FrameType::PeerPresent => {
+                    let peer_present = Frame::<PeerPresent>::decode(&mut reading_buffer.as_slice())
+                        .map_err(|_| anyhow!("Decode error"))?
+                        .inner
+                        .into_inner();
                     debug!(
-                        "[{pk:?}] will handle messages for {client_pk:?} (can mesh: {can_mesh})"
+                        "[{pk:?}] will handle messages for {:?} (can mesh: {can_mesh})",
+                        peer_present.public_key,
                     );
                     command_sender
-                        .send(ServiceCommand::PeerPresent(client_pk, our_sink.clone()))
+                        .send(ServiceCommand::PeerPresent(
+                            peer_present.public_key,
+                            our_sink.clone(),
+                        ))
                         .await
                         .unwrap();
                 }
-                Ok((frame_type, _buf)) => todo!("frame type: {frame_type:?}"),
-                Err(e) => {
-                    warn!("[{pk:?}] Exiting read loop - next frame failed to read: {e}");
-                    return Err(e);
-                }
+
+                frame_type => todo!("frame type: {frame_type:?}"),
             }
         }
     }
@@ -147,25 +162,23 @@ impl Client {
                 }) => match (can_mesh, target != pk) {
                     (true, true) => {
                         trace!("[{pk:?}] Will forward packet from {source:?} to {target:?}");
-                        let mut data =
-                            Vec::with_capacity(source.len() + target.len() + payload.len());
-                        data.extend_from_slice(&source);
-                        data.extend_from_slice(&target);
-                        data.extend_from_slice(&payload);
+                        let forward_packet = ForwardPacket::new(source, target, payload);
+                        write_forward_packet(&mut w, forward_packet).await?;
+                    }
 
-                        write_frame(&mut w, FrameType::ForwardPacket, data)
-                            .await
-                            .map_err(|e| anyhow::anyhow!("{e}"))?;
-                    }
                     (_, false) => {
-                        trace!("[{pk:?}] Will send {} bytes to {target:?}", payload.len());
-                        let mut data = vec![];
-                        data.extend_from_slice(&target);
-                        data.extend_from_slice(&payload);
-                        write_frame(&mut w, FrameType::RecvPacket, data)
+                        let mut writing_buffer = Vec::new();
+                        trace!("[{pk:?}] Will send {} bytes to {target}", payload.len());
+                        let frame = Frame {
+                            frame_type: FrameType::RecvPacket,
+                            inner: SizeWrapper::new(RecvPacket { target, payload }),
+                        };
+                        frame.encode(&mut writing_buffer)?;
+                        w.write_all(&writing_buffer)
                             .await
-                            .map_err(|e| anyhow::anyhow!("{e}"))?;
+                            .map_err(|e| anyhow!("{e}"))?;
                     }
+
                     (false, true) => todo!(),
                 },
                 Some(WriteLoopCommands::Stop) => {
@@ -174,7 +187,7 @@ impl Client {
                 }
                 Some(WriteLoopCommands::PeerPresent(pk)) => {
                     trace!("[{pk:?}] Sending peer present with {pk}");
-                    write_peer_present(&mut w, &pk).await.unwrap();
+                    write_peer_present(&mut w, &pk).await?;
                 }
                 None => {
                     debug!("[{pk:?}] write loop stopping (no more commands)");
