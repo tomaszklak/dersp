@@ -137,6 +137,8 @@ pub enum FrameType {
     /// control message for communication with derp. Since these messages are not
     /// for communication with other peers through derp, they don't contain public_key
     ControlMessage = 0x14,
+    /// 32B src pub key + 32B dst pub key + packet bytes
+    ForwardPacket = 0x0a,
 }
 
 /// Error is a boxed std::error::Error

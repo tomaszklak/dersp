@@ -70,10 +70,8 @@ impl DerpService {
     }
 
     pub async fn new(config: Config) -> anyhow::Result<Arc<Mutex<Self>>> {
-        let meshkey = match config.meshkey_path {
-            Some(path) => Some(read_to_string(path)?.trim().to_owned()),
-            None => None,
-        };
+        let meshkey = config.meshkey;
+
         let (s, r) = channel(1);
         let service_sk = SecretKey::gen();
         info!("Service public key: {}", service_sk.public());
@@ -163,15 +161,24 @@ async fn command_loop(
 ) -> anyhow::Result<()> {
     loop {
         match r.recv().await {
-            Some(ServiceCommand::SendPacket(pk, buf)) => {
-                debug!("send packet to {pk:?}");
-                let sink = match service.lock().await.peers_sinks.get(&pk) {
+            Some(ServiceCommand::SendPacket {
+                source,
+                target,
+                payload,
+            }) => {
+                debug!("send packet to {target:?}");
+                let sink = match service.lock().await.peers_sinks.get(&target) {
                     Some(sink) => sink.clone(),
                     None => {
                         continue;
                     }
                 };
-                sink.send(WriteLoopCommands::SendPacket(pk, buf)).await?;
+                sink.send(WriteLoopCommands::SendPacket {
+                    source,
+                    target,
+                    payload,
+                })
+                .await?;
             }
             Some(ServiceCommand::SubscribeForPeerChanges(mesh_peer_pk, mesh_sink)) => {
                 let current_peers: Vec<PublicKey> = {
@@ -226,7 +233,11 @@ fn notify_about_all_clients(
 
 pub enum ServiceCommand {
     Stop,
-    SendPacket(PublicKey, Vec<u8>),
+    SendPacket {
+        source: PublicKey,
+        target: PublicKey,
+        payload: Vec<u8>,
+    },
     SubscribeForPeerChanges(PublicKey, Sender<WriteLoopCommands>),
     PeerPresent(PublicKey, Sender<WriteLoopCommands>),
 }

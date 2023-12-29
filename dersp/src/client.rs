@@ -41,7 +41,7 @@ impl Client {
         command_sender: Sender<ServiceCommand>,
     ) -> Result<Sender<WriteLoopCommands>> {
         let w = self.w;
-        let sink = Self::start_write_loop(w, self.pk);
+        let sink = Self::start_write_loop(w, self.pk, self.can_mesh);
         let r = self.r;
         Self::start_read_loop(r, self.pk, command_sender, self.can_mesh, sink.clone());
 
@@ -83,10 +83,11 @@ impl Client {
                     let is_forward = send_packet.target != pk;
                     debug!("[{pk:?}] send_packet: {send_packet:?}, can mesh: {can_mesh}, is forward: {is_forward}");
                     command_sender
-                        .send(ServiceCommand::SendPacket(
-                            send_packet.target,
-                            send_packet.payload.to_vec(),
-                        ))
+                        .send(ServiceCommand::SendPacket {
+                            source: pk,
+                            target: send_packet.target,
+                            payload: send_packet.payload.to_vec(),
+                        })
                         .await?;
                 }
                 Ok((FrameType::WatchConns, _)) => {
@@ -120,10 +121,14 @@ impl Client {
         }
     }
 
-    pub fn start_write_loop(w: OwnedWriteHalf, pk: PublicKey) -> Sender<WriteLoopCommands> {
+    pub fn start_write_loop(
+        w: OwnedWriteHalf,
+        pk: PublicKey,
+        can_mesh: bool,
+    ) -> Sender<WriteLoopCommands> {
         let (s, r) = channel(1);
 
-        spawn(Self::write_loop(r, w, pk));
+        spawn(Self::write_loop(r, w, pk, can_mesh));
 
         s
     }
@@ -131,18 +136,38 @@ impl Client {
         mut r: Receiver<WriteLoopCommands>,
         mut w: OwnedWriteHalf,
         pk: PublicKey,
+        can_mesh: bool,
     ) -> anyhow::Result<()> {
         loop {
             match r.recv().await {
-                Some(WriteLoopCommands::SendPacket(target_pk, buf)) => {
-                    trace!("[{pk:?}] Will send {} bytes to {pk}", buf.len());
-                    let mut data = vec![];
-                    data.extend_from_slice(&target_pk);
-                    data.extend_from_slice(&buf);
-                    write_frame(&mut w, FrameType::RecvPacket, data)
-                        .await
-                        .map_err(|e| anyhow::anyhow!("{e}"))?;
-                }
+                Some(WriteLoopCommands::SendPacket {
+                    source,
+                    target,
+                    payload,
+                }) => match (can_mesh, target != pk) {
+                    (true, true) => {
+                        trace!("[{pk:?}] Will forward packet from {source:?} to {target:?}");
+                        let mut data =
+                            Vec::with_capacity(source.len() + target.len() + payload.len());
+                        data.extend_from_slice(&source);
+                        data.extend_from_slice(&target);
+                        data.extend_from_slice(&payload);
+
+                        write_frame(&mut w, FrameType::ForwardPacket, data)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    }
+                    (_, false) => {
+                        trace!("[{pk:?}] Will send {} bytes to {target:?}", payload.len());
+                        let mut data = vec![];
+                        data.extend_from_slice(&target);
+                        data.extend_from_slice(&payload);
+                        write_frame(&mut w, FrameType::RecvPacket, data)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    }
+                    (false, true) => todo!(),
+                },
                 Some(WriteLoopCommands::Stop) => {
                     debug!("[{pk:?}] write loop stopping");
                     return Ok(());
@@ -162,7 +187,11 @@ impl Client {
 
 #[derive(Debug)]
 pub enum WriteLoopCommands {
-    SendPacket(PublicKey, Vec<u8>),
+    SendPacket {
+        source: PublicKey,
+        target: PublicKey,
+        payload: Vec<u8>,
+    },
     PeerPresent(PublicKey),
     Stop,
 }

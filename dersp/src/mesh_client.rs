@@ -2,7 +2,7 @@ use std::{io::Cursor, net::SocketAddr};
 
 use anyhow::{anyhow, bail};
 use httparse::Status;
-use log::{debug, trace};
+use log::{debug, trace, warn};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{tcp::OwnedWriteHalf, TcpStream},
@@ -12,7 +12,7 @@ use tokio::{
 
 use crate::{
     client::WriteLoopCommands,
-    crypto::{PublicKey, SecretKey},
+    crypto::{PublicKey, SecretKey, KEY_SIZE},
     proto_old::{
         exchange_keys, read_frame, read_server_info, write_frame, write_peer_present, FrameType,
     },
@@ -92,14 +92,27 @@ impl MeshClient {
 
         spawn(write_loop(receiver, w));
 
+        if let Err(e) = self.read_loop(reader, sender).await {
+            warn!("[{mesh_peer_pk:?}] read loop failed: {e}");
+            return Err(e);
+        }
+
+        Ok(())
+    }
+
+    async fn read_loop(
+        self,
+        mut reader: impl AsyncRead + Unpin,
+        sender: Sender<WriteLoopCommands>,
+    ) -> anyhow::Result<()> {
         loop {
             let next_frame = read_frame(&mut reader).await;
             if let Ok(next_frame) = &next_frame {
                 trace!("next frame: {:?}", next_frame.0);
             }
 
-            match next_frame {
-                Ok((FrameType::PeerPresent, buf)) => {
+            match next_frame? {
+                (FrameType::PeerPresent, buf) => {
                     let client_pk: PublicKey = buf.try_into().map_err(|e| anyhow!("{e:?}"))?;
                     trace!("Got peer present for {client_pk}");
                     self.command_sender
@@ -107,16 +120,38 @@ impl MeshClient {
                         .await
                         .unwrap();
                 }
-                Ok((FrameType::RecvPacket, buf)) => {
-                    let sender_pk: PublicKey = buf[..32].try_into().unwrap();
-                    debug!("Got recv packet from sender {sender_pk}");
-                    self.command_sender
-                        .send(ServiceCommand::SendPacket(sender_pk, buf[32..].to_vec()))
-                        .await
+                /*
+                        (FrameType::RecvPacket, buf) => {
+                            let sender_pk: PublicKey = buf[..32].try_into().unwrap();
+                            debug!("Got recv packet from sender {sender_pk}");
+                            self.command_sender
+                                .send(ServiceCommand::SendPacket {
+                                    source: todo!(),
+                                    target: sender_pk,
+                                    payload: buf[32..].to_vec(),
+                                })
+                                .await
+                                .unwrap();
+                        }
+                */
+                (FrameType::ForwardPacket, buf) => {
+                    let source_pk: PublicKey = buf.get(..KEY_SIZE).unwrap().try_into().unwrap();
+                    let target_pk: PublicKey = buf
+                        .get(KEY_SIZE..(2 * KEY_SIZE))
+                        .unwrap()
+                        .try_into()
                         .unwrap();
+                    let payload = buf.get((2 * KEY_SIZE)..).unwrap();
+                    self.command_sender
+                        .send(ServiceCommand::SendPacket {
+                            source: source_pk,
+                            target: target_pk,
+                            payload: payload.to_vec(),
+                        })
+                        .await?;
                 }
-                Ok(_) => todo!(),
-                Err(_) => todo!(),
+                _ => todo!(),
+                // Err(e) => todo!(),
             }
         }
     }
