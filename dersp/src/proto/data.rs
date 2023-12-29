@@ -2,10 +2,9 @@ use anyhow::Context;
 use codec::{Decode, Encode, SizeWrapper};
 
 use crypto_box::{
-    aead::{Aead, AeadCore, Payload},
+    aead::{Aead, AeadCore},
     PublicKey as BoxPublicKey, SalsaBox,
 };
-use log::{debug, trace};
 use serde::{Deserialize, Serialize};
 
 use crate::crypto::{PublicKey, SecretKey};

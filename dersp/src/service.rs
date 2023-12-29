@@ -209,7 +209,7 @@ async fn command_loop(
                     }
                 }
             }
-            Some(ServiceCommand::Stop) => return Ok(()),
+            Some(ServiceCommand::_Stop) => return Ok(()),
             None => return Ok(()),
         }
     }
@@ -230,7 +230,7 @@ fn notify_about_all_clients(
 }
 
 pub enum ServiceCommand {
-    Stop,
+    _Stop,
     SendPacket {
         source: PublicKey,
         target: PublicKey,

@@ -10,6 +10,7 @@ use tokio::{
     spawn,
     sync::mpsc::{channel, Receiver, Sender},
 };
+use log::debug;
 
 use crate::{
     client::WriteLoopCommands,

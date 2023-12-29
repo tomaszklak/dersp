@@ -1,5 +1,6 @@
 use crate::{
     crypto::PublicKey,
+    inout::DerpReader,
     proto::data::{ForwardPacket, Frame, FrameType, PeerPresent, RecvPacket, SendPacket},
     proto::{write_forward_packet, write_peer_present},
     service::ServiceCommand,
@@ -9,7 +10,7 @@ use codec::{Decode, Encode, SizeWrapper};
 use log::{debug, trace, warn};
 use std::net::SocketAddr;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::AsyncWriteExt,
     net::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpStream,
@@ -19,7 +20,7 @@ use tokio::{
 };
 
 pub struct Client {
-    peer: SocketAddr,
+    _peer: SocketAddr,
     r: OwnedReadHalf,
     w: OwnedWriteHalf,
     pk: PublicKey,
@@ -28,10 +29,10 @@ pub struct Client {
 
 impl Client {
     pub fn new(socket: TcpStream, pk: PublicKey, can_mesh: bool) -> Result<Self> {
-        let peer = socket.peer_addr()?;
+        let _peer = socket.peer_addr()?;
         let (r, w) = socket.into_split();
         Ok(Self {
-            peer,
+            _peer,
             r,
             w,
             pk,
@@ -67,25 +68,22 @@ impl Client {
     }
 
     pub async fn read_loop(
-        mut r: OwnedReadHalf,
+        r: OwnedReadHalf,
         pk: PublicKey,
         command_sender: Sender<ServiceCommand>,
         can_mesh: bool,
         our_sink: Sender<WriteLoopCommands>,
     ) -> anyhow::Result<()> {
         trace!("[{pk:?}] starting read loop");
-        let mut reading_buffer = [0_u8; 4096];
+        let mut derp_reader = DerpReader::new(r);
 
         loop {
-            reading_buffer.fill(0);
-            r.read(&mut reading_buffer).await?;
+            let message = derp_reader.get_next_message().await?;
+            trace!("[{pk:?}] next frame: {:?}", message.ty);
 
-            let frame_type = FrameType::get_frame_type(&reading_buffer);
-            trace!("[{pk:?}] next frame: {frame_type:?}");
-
-            match frame_type {
+            match message.ty {
                 FrameType::SendPacket => {
-                    let send_packet = Frame::<SendPacket>::decode(&mut reading_buffer.as_slice())
+                    let send_packet = Frame::<SendPacket>::decode(&mut message.buffer.as_slice())
                         .map_err(|_| anyhow!("Decode error"))?
                         .inner
                         .into_inner();
@@ -114,7 +112,7 @@ impl Client {
                 }
 
                 FrameType::PeerPresent => {
-                    let peer_present = Frame::<PeerPresent>::decode(&mut reading_buffer.as_slice())
+                    let peer_present = Frame::<PeerPresent>::decode(&mut message.buffer.as_slice())
                         .map_err(|_| anyhow!("Decode error"))?
                         .inner
                         .into_inner();
@@ -181,7 +179,7 @@ impl Client {
 
                     (false, true) => todo!(),
                 },
-                Some(WriteLoopCommands::Stop) => {
+                Some(WriteLoopCommands::_Stop) => {
                     debug!("[{pk:?}] write loop stopping");
                     return Ok(());
                 }
@@ -206,5 +204,5 @@ pub enum WriteLoopCommands {
         payload: Vec<u8>,
     },
     PeerPresent(PublicKey),
-    Stop,
+    _Stop,
 }
