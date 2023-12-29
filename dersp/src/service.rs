@@ -18,7 +18,6 @@ use tokio::{
     },
 };
 
-#[async_trait]
 pub trait Service {
     async fn run(&self, listener: TcpListener) -> anyhow::Result<()>;
 }
@@ -120,7 +119,6 @@ impl DerpService {
 }
 
 // TODO: should this be RWLock instead of Mutex?
-#[async_trait]
 impl Service for Arc<Mutex<DerpService>> {
     async fn run(&self, listener: TcpListener) -> anyhow::Result<()> {
         loop {
