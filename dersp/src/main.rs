@@ -4,8 +4,6 @@ mod mesh_client;
 mod proto;
 mod service;
 
-mod proto_old;
-
 use crate::service::{DerpService, Service};
 use clap::Parser;
 use log::info;

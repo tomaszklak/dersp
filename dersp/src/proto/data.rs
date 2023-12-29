@@ -2,8 +2,8 @@ use anyhow::Context;
 use codec::{Decode, Encode, SizeWrapper};
 
 use crypto_box::{
-    aead::{Aead, Payload},
-    SalsaBox,
+    aead::{Aead, AeadCore, Payload},
+    PublicKey as BoxPublicKey, SalsaBox,
 };
 use log::{debug, trace};
 use serde::{Deserialize, Serialize};
@@ -119,6 +119,14 @@ impl ServerKey {
             inner: SizeWrapper::new(self),
         }
     }
+
+    pub fn validate_magic(&self) -> anyhow::Result<()> {
+        if self.magic != MAGIC {
+            Err(anyhow::anyhow!("Invalid magic {:?}", self.magic))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +144,43 @@ pub struct ClientInfo {
 }
 
 impl ClientInfo {
+    pub fn new(
+        secret_key: SecretKey,
+        server_key: PublicKey,
+        meshkey: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        let secret_key = secret_key.into();
+        let public_key = BoxPublicKey::from(&secret_key);
+        let server_key = server_key.into();
+
+        let mut rng = rand_core::OsRng;
+        let nonce = SalsaBox::generate_nonce(&mut rng);
+        let plain_text: Vec<u8> = if let Some(meshkey) = meshkey {
+            format!("{{\"version\": 2, \"meshKey\": \"{meshkey}\"}}")
+                .as_bytes()
+                .to_vec()
+        } else {
+            b"{\"version\": 2, \"meshKey\": \"\"}".to_vec()
+        };
+
+        let b = SalsaBox::new(&server_key, &secret_key);
+
+        let cipher_text = b
+            .encrypt(&nonce, &plain_text[..])
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        let nonce: [u8; 24] = nonce
+            .to_vec()
+            .try_into()
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+
+        Ok(ClientInfo {
+            public_key: public_key.into(),
+            nonce,
+            cipher_text,
+        })
+    }
+
     pub fn complete(&self, sk: &SecretKey) -> anyhow::Result<CompleteClientInfo> {
         let b = SalsaBox::new(&self.public_key.into(), &sk.into());
         let plain_text = b.decrypt(
@@ -150,6 +195,13 @@ impl ClientInfo {
             nonce: self.nonce,
             payload,
         })
+    }
+
+    pub fn frame(self) -> Frame<ClientInfo> {
+        Frame {
+            frame_type: FrameType::ClientInfo,
+            inner: SizeWrapper::new(self),
+        }
     }
 }
 
@@ -213,6 +265,11 @@ impl ForwardPacket {
 #[derive(Debug, Decode, Encode)]
 pub struct PeerPresent {
     pub public_key: PublicKey,
+}
+
+#[derive(Default, Decode, Encode)]
+pub struct WatchConns {
+    pub data: Vec<u8>,
 }
 
 mod tests {

@@ -1,6 +1,7 @@
 use std::{io::Cursor, net::SocketAddr};
 
 use anyhow::{anyhow, bail};
+use codec::{Decode, Encode};
 use httparse::Status;
 use log::{debug, trace, warn};
 use tokio::{
@@ -13,9 +14,8 @@ use tokio::{
 use crate::{
     client::WriteLoopCommands,
     crypto::{PublicKey, SecretKey, KEY_SIZE},
-    proto_old::{
-        exchange_keys, read_frame, read_server_info, write_frame, write_peer_present, FrameType,
-    },
+    proto::data::{ForwardPacket, Frame, FrameType, PeerPresent},
+    proto::{exchange_keys, read_server_info, write_peer_present, write_watch_conns},
     service::ServiceCommand,
 };
 
@@ -73,21 +73,16 @@ impl MeshClient {
         let leftovers = connect_http(&mut r, &mut w).await?;
         let mut reader = Cursor::new(leftovers).chain(r);
 
-        let mesh_peer_pk = exchange_keys(&mut reader, &mut w, self.secret_key, Some(&self.meshkey))
-            .await
-            .map_err(|e| anyhow!("{e}"))?;
+        let mesh_peer_pk =
+            exchange_keys(&mut reader, &mut w, self.secret_key, Some(&self.meshkey)).await?;
 
         mesh_peer_pk_sender
             .send(mesh_peer_pk)
             .map_err(|e| anyhow!("{e}"))?;
 
-        read_server_info(&mut reader)
-            .await
-            .map_err(|e| anyhow!("{e}"))?;
+        read_server_info(&mut reader).await?;
 
-        write_frame(&mut w, crate::proto_old::FrameType::WatchConns, Vec::new())
-            .await
-            .map_err(|e| anyhow!("{e}"))?;
+        write_watch_conns(&mut w).await?;
 
         trace!(
             "starting read loop of mesh client {} connected to {mesh_peer_pk} ({})",
@@ -110,53 +105,46 @@ impl MeshClient {
         mut reader: impl AsyncRead + Unpin,
         sender: Sender<WriteLoopCommands>,
     ) -> anyhow::Result<()> {
+        let mut reading_buffer = [0_u8; 4096];
         loop {
-            let next_frame = read_frame(&mut reader).await;
-            if let Ok(next_frame) = &next_frame {
-                trace!("next frame: {:?}", next_frame.0);
-            }
+            reading_buffer.fill(0);
+            reader.read(&mut reading_buffer).await?;
 
-            match next_frame? {
-                (FrameType::PeerPresent, buf) => {
-                    let client_pk: PublicKey = buf.try_into().map_err(|e| anyhow!("{e:?}"))?;
-                    trace!("Got peer present for {client_pk}");
+            let frame_type = FrameType::get_frame_type(&reading_buffer);
+            trace!("next frame: {frame_type:?}");
+
+            match frame_type {
+                FrameType::PeerPresent => {
+                    let peer_present = Frame::<PeerPresent>::decode(&mut reading_buffer.as_slice())
+                        .map_err(|_| anyhow!("Decode error"))?
+                        .inner
+                        .into_inner();
+                    trace!("Got peer present for {}", peer_present.public_key);
                     self.command_sender
-                        .send(ServiceCommand::PeerPresent(client_pk, sender.clone()))
+                        .send(ServiceCommand::PeerPresent(
+                            peer_present.public_key,
+                            sender.clone(),
+                        ))
                         .await
                         .unwrap();
                 }
-                /*
-                        (FrameType::RecvPacket, buf) => {
-                            let sender_pk: PublicKey = buf[..32].try_into().unwrap();
-                            debug!("Got recv packet from sender {sender_pk}");
-                            self.command_sender
-                                .send(ServiceCommand::SendPacket {
-                                    source: todo!(),
-                                    target: sender_pk,
-                                    payload: buf[32..].to_vec(),
-                                })
-                                .await
-                                .unwrap();
-                        }
-                */
-                (FrameType::ForwardPacket, buf) => {
-                    let source_pk: PublicKey = buf.get(..KEY_SIZE).unwrap().try_into().unwrap();
-                    let target_pk: PublicKey = buf
-                        .get(KEY_SIZE..(2 * KEY_SIZE))
-                        .unwrap()
-                        .try_into()
-                        .unwrap();
-                    let payload = buf.get((2 * KEY_SIZE)..).unwrap();
+
+                FrameType::ForwardPacket => {
+                    let forward_packet =
+                        Frame::<ForwardPacket>::decode(&mut reading_buffer.as_slice())
+                            .map_err(|_| anyhow!("Decode error"))?
+                            .inner
+                            .into_inner();
                     self.command_sender
                         .send(ServiceCommand::SendPacket {
-                            source: source_pk,
-                            target: target_pk,
-                            payload: payload.to_vec(),
+                            source: forward_packet.source,
+                            target: forward_packet.target,
+                            payload: forward_packet.payload,
                         })
                         .await?;
                 }
+
                 _ => todo!(),
-                // Err(e) => todo!(),
             }
         }
     }
