@@ -42,7 +42,7 @@ impl DerpService {
             (None, None) => false,
             (None, Some(_)) => {
                 bail!(
-                    "Client {client_pk} ({:?}) tried to mesh with a server that can't mesh",
+                    "Client {client_pk:?} ({:?}) tried to mesh with a server that can't mesh",
                     socket.peer_addr()
                 )
             }
@@ -50,7 +50,7 @@ impl DerpService {
             (Some(server_meshkey), Some(client_meshkey)) => {
                 ensure!(
                     server_meshkey == client_meshkey,
-                    "Client {client_pk} ({:?}) tried to mesh with a wrong key",
+                    "Client {client_pk:?} ({:?}) tried to mesh with a wrong key",
                     socket.peer_addr()
                 );
                 true
@@ -59,9 +59,9 @@ impl DerpService {
         let client = Client::new(socket, client_pk, can_mesh)?;
         let sink = client.run(self.command_sender.clone()).await?;
 
-        info!("will insert {client_pk} to peers");
+        info!("will insert {client_pk:?} to peers (can mesh: {can_mesh})");
         if let Some(old) = self.peers_sinks.insert(client_pk, sink) {
-            warn!("Newer client with {client_pk}: {old:?}");
+            warn!("Newer client with {client_pk:?}: {old:?}");
         }
 
         self.notify_all_mesh_peers(client_pk).await;
@@ -106,7 +106,7 @@ impl DerpService {
     }
 
     async fn notify_all_mesh_peers(&self, client_pk: PublicKey) {
-        trace!("Will notify all mesh about new client: {client_pk}");
+        trace!("Will notify all mesh about new client: {client_pk:?}");
         let mesh = self.mesh.clone();
         spawn(async move {
             for (peer, sink) in mesh {
@@ -114,7 +114,7 @@ impl DerpService {
                     .send(WriteLoopCommands::PeerPresent(client_pk.clone()))
                     .await
                 {
-                    warn!("Failed to notify mesh peer {peer} about client {client_pk}: {e}");
+                    warn!("Failed to notify mesh peer {peer} about client {client_pk:?}: {e}");
                 }
             }
         });
@@ -164,7 +164,7 @@ async fn command_loop(
     loop {
         match r.recv().await {
             Some(ServiceCommand::SendPacket(pk, buf)) => {
-                debug!("send packet to {pk}");
+                debug!("send packet to {pk:?}");
                 let sink = match service.lock().await.peers_sinks.get(&pk) {
                     Some(sink) => sink.clone(),
                     None => {
@@ -177,7 +177,7 @@ async fn command_loop(
                 let current_peers: Vec<PublicKey> = {
                     let mut service = service.lock().await;
                     if let Some(_old) = service.mesh.insert(mesh_peer_pk, mesh_sink.clone()) {
-                        warn!("Mesh peer for {mesh_peer_pk} overwriten");
+                        warn!("Mesh peer for {mesh_peer_pk:?} overwriten");
                     }
                     service
                         .peers_sinks
@@ -190,16 +190,16 @@ async fn command_loop(
 
                 notify_about_all_clients(mesh_peer_pk, mesh_sink, current_peers);
 
-                trace!("Peer {mesh_peer_pk} added to mesh");
+                trace!("Peer {mesh_peer_pk:?} added to mesh");
             }
             Some(ServiceCommand::PeerPresent(pk, sink)) => {
                 let mut service = service.lock().await;
                 match service.peers_sinks.entry(pk) {
                     std::collections::hash_map::Entry::Occupied(_) => {
-                        warn!("Ignoring already known peer: {pk}");
+                        warn!("Ignoring already known peer: {pk:?}");
                     }
                     std::collections::hash_map::Entry::Vacant(e) => {
-                        info!("will insert {pk} to peers (via peer present)");
+                        info!("will insert {pk:?} to peers (via peer present)");
                         e.insert(sink);
                     }
                 }
@@ -218,7 +218,7 @@ fn notify_about_all_clients(
     spawn(async move {
         for pk in clients_pk {
             if let Err(e) = mesh_sink.send(WriteLoopCommands::PeerPresent(pk)).await {
-                warn!("Failed to notify mesh peer {mesh_peer_pk} about client {pk}: {e}");
+                warn!("Failed to notify mesh peer {mesh_peer_pk:?} about client {pk:?}: {e}");
             }
         }
     });

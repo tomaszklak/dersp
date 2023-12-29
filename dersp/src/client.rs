@@ -57,7 +57,7 @@ impl Client {
     ) {
         spawn(async move {
             if let Err(e) = Self::read_loop(r, pk, command_sender, can_mesh, our_sink).await {
-                warn!("Read loop of {pk} failed: {e}");
+                warn!("[{pk:?}] Read loop failed: {e}");
                 // TODO: close whole client?
             }
         });
@@ -70,17 +70,18 @@ impl Client {
         can_mesh: bool,
         our_sink: Sender<WriteLoopCommands>,
     ) -> anyhow::Result<()> {
-        trace!("starting read loop of {pk}");
+        trace!("[{pk:?}] starting read loop");
         loop {
             let next_frame = read_frame(&mut r).await;
             if let Ok(next_frame) = &next_frame {
-                trace!("next frame: {:?}", next_frame.0);
+                trace!("[{pk:?}] next frame: {:?}", next_frame.0);
             }
 
             match next_frame {
                 Ok((FrameType::SendPacket, buf)) => {
                     let send_packet = parse_send_packet(&buf)?;
-                    debug!("send_packet: {send_packet:?}");
+                    let is_forward = send_packet.target != pk;
+                    debug!("[{pk:?}] send_packet: {send_packet:?}, can mesh: {can_mesh}, is forward: {is_forward}");
                     command_sender
                         .send(ServiceCommand::SendPacket(
                             send_packet.target,
@@ -102,6 +103,9 @@ impl Client {
                 }
                 Ok((FrameType::PeerPresent, buf)) => {
                     let client_pk: PublicKey = buf.try_into().unwrap();
+                    debug!(
+                        "[{pk:?}] will handle messages for {client_pk:?} (can mesh: {can_mesh})"
+                    );
                     command_sender
                         .send(ServiceCommand::PeerPresent(client_pk, our_sink.clone()))
                         .await
@@ -109,7 +113,7 @@ impl Client {
                 }
                 Ok((frame_type, _buf)) => todo!("frame type: {frame_type:?}"),
                 Err(e) => {
-                    warn!("{pk}: Exiting read loop - next frame failed to read: {e}");
+                    warn!("[{pk:?}] Exiting read loop - next frame failed to read: {e}");
                     return Err(e);
                 }
             }
@@ -131,7 +135,7 @@ impl Client {
         loop {
             match r.recv().await {
                 Some(WriteLoopCommands::SendPacket(target_pk, buf)) => {
-                    trace!("Will send {} bytes to {pk}", buf.len());
+                    trace!("[{pk:?}] Will send {} bytes to {pk}", buf.len());
                     let mut data = vec![];
                     data.extend_from_slice(&target_pk);
                     data.extend_from_slice(&buf);
@@ -140,15 +144,15 @@ impl Client {
                         .map_err(|e| anyhow::anyhow!("{e}"))?;
                 }
                 Some(WriteLoopCommands::Stop) => {
-                    debug!("{pk} write loop stopping");
+                    debug!("[{pk:?}] write loop stopping");
                     return Ok(());
                 }
                 Some(WriteLoopCommands::PeerPresent(pk)) => {
-                    trace!("Sending peer present with {pk}");
+                    trace!("[{pk:?}] Sending peer present with {pk}");
                     write_peer_present(&mut w, &pk).await.unwrap();
                 }
                 None => {
-                    debug!("{pk} write loop stopping (no more commands)");
+                    debug!("[{pk:?}] write loop stopping (no more commands)");
                     return Ok(());
                 }
             }
