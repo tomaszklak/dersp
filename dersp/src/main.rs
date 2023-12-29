@@ -9,10 +9,9 @@ mod proto_old;
 use crate::service::{DerpService, Service};
 use clap::Parser;
 use log::info;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 #[derive(Parser, Debug)]
 #[command(version)]
@@ -23,7 +22,7 @@ pub struct Config {
 
     /// List of other derp servers with which we should create a mesh
     #[arg(long)]
-    mesh_peers: Vec<SocketAddr>,
+    mesh_peers: Vec<String>,
 
     #[arg(long, short)]
     listen_on: String,
@@ -36,7 +35,7 @@ pub async fn main() -> anyhow::Result<()> {
     info!("Config: {config:?}");
 
     let listener = TcpListener::bind(&config.listen_on).await?;
-    let service: Arc<Mutex<DerpService>> = DerpService::new(config).await?;
+    let service: Arc<RwLock<DerpService>> = DerpService::new(config).await?;
 
     info!("Listening on: {:?}", listener.local_addr());
 
