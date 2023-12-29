@@ -10,7 +10,6 @@ use crate::service::{DerpService, Service};
 use clap::Parser;
 use log::info;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
@@ -20,7 +19,7 @@ use tokio::sync::Mutex;
 pub struct Config {
     /// Path to the mesh key used to authenticate with other derp servers
     #[arg(long)]
-    meshkey_path: Option<PathBuf>,
+    meshkey: Option<String>,
 
     /// List of other derp servers with which we should create a mesh
     #[arg(long)]
