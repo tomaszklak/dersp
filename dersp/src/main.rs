@@ -12,7 +12,7 @@ use log::info;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 #[derive(Parser, Debug)]
 #[command(version)]
@@ -36,7 +36,7 @@ pub async fn main() -> anyhow::Result<()> {
     info!("Config: {config:?}");
 
     let listener = TcpListener::bind(&config.listen_on).await?;
-    let service: Arc<Mutex<DerpService>> = DerpService::new(config).await?;
+    let service: Arc<RwLock<DerpService>> = DerpService::new(config).await?;
 
     info!("Listening on: {:?}", listener.local_addr());
 

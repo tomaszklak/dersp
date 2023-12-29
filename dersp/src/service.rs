@@ -6,15 +6,14 @@ use crate::{
     Config,
 };
 use anyhow::{bail, ensure};
-use async_trait::async_trait;
 use log::{debug, info, trace, warn};
-use std::{collections::HashMap, fs::read_to_string, net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::{
     net::{TcpListener, TcpStream},
     spawn,
     sync::{
         mpsc::{channel, Receiver, Sender},
-        Mutex,
+        RwLock,
     },
 };
 
@@ -68,14 +67,14 @@ impl DerpService {
         Ok(())
     }
 
-    pub async fn new(config: Config) -> anyhow::Result<Arc<Mutex<Self>>> {
+    pub async fn new(config: Config) -> anyhow::Result<Arc<RwLock<Self>>> {
         let meshkey = config.meshkey;
 
         let (s, r) = channel(1);
         let service_sk = SecretKey::gen();
         info!("Service public key: {}", service_sk.public());
 
-        let ret = Arc::new(Mutex::new(Self {
+        let ret = Arc::new(RwLock::new(Self {
             peers_sinks: Default::default(),
             mesh: Default::default(),
             command_sender: s.clone(),
@@ -87,8 +86,7 @@ impl DerpService {
                 let peer_client = MeshClient::new(addr, service_sk, meshkey.clone(), s.clone());
                 match peer_client.start().await {
                     Ok((sender, mesh_peer_pk)) => {
-                        let mut ret = ret.lock().await;
-                        ret.mesh.insert(mesh_peer_pk, sender);
+                        ret.write().await.mesh.insert(mesh_peer_pk, sender);
                     }
                     Err(e) => warn!("Failed to start peer client for {addr}: {e}"),
                 }
@@ -119,7 +117,7 @@ impl DerpService {
 }
 
 // TODO: should this be RWLock instead of Mutex?
-impl Service for Arc<Mutex<DerpService>> {
+impl Service for Arc<RwLock<DerpService>> {
     async fn run(&self, listener: TcpListener) -> anyhow::Result<()> {
         loop {
             // TODO: handle panic!
@@ -138,14 +136,14 @@ impl Service for Arc<Mutex<DerpService>> {
 async fn handle_client(
     mut socket: TcpStream,
     peer_addr: SocketAddr,
-    service: Arc<Mutex<DerpService>>,
+    service: Arc<RwLock<DerpService>>,
 ) -> anyhow::Result<()> {
     debug!("Got connection from: {peer_addr:?}");
     let sk = SecretKey::gen();
     let (client_pk, meshkey) = handle_handshake(&mut socket, &sk).await?;
 
     service
-        .lock()
+        .write()
         .await
         .add_new_client(socket, client_pk, meshkey)
         .await?;
@@ -155,7 +153,7 @@ async fn handle_client(
 
 async fn command_loop(
     mut r: Receiver<ServiceCommand>,
-    service: Arc<Mutex<DerpService>>,
+    service: Arc<RwLock<DerpService>>,
 ) -> anyhow::Result<()> {
     loop {
         match r.recv().await {
@@ -165,7 +163,7 @@ async fn command_loop(
                 payload,
             }) => {
                 debug!("send packet to {target:?}");
-                let sink = match service.lock().await.peers_sinks.get(&target) {
+                let sink = match service.read().await.peers_sinks.get(&target) {
                     Some(sink) => sink.clone(),
                     None => {
                         continue;
@@ -180,10 +178,11 @@ async fn command_loop(
             }
             Some(ServiceCommand::SubscribeForPeerChanges(mesh_peer_pk, mesh_sink)) => {
                 let current_peers: Vec<PublicKey> = {
-                    let mut service = service.lock().await;
+                    let mut service = service.write().await;
                     if let Some(_old) = service.mesh.insert(mesh_peer_pk, mesh_sink.clone()) {
                         warn!("Mesh peer for {mesh_peer_pk:?} overwriten");
                     }
+                    let service = service.downgrade();
                     service
                         .peers_sinks
                         .keys()
@@ -198,7 +197,7 @@ async fn command_loop(
                 trace!("Peer {mesh_peer_pk:?} added to mesh");
             }
             Some(ServiceCommand::PeerPresent(pk, sink)) => {
-                let mut service = service.lock().await;
+                let mut service = service.write().await;
                 match service.peers_sinks.entry(pk) {
                     std::collections::hash_map::Entry::Occupied(_) => {
                         warn!("Ignoring already known peer: {pk:?}");
