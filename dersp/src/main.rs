@@ -1,5 +1,6 @@
 mod client;
 mod crypto;
+mod inout;
 mod mesh_client;
 mod proto;
 mod service;

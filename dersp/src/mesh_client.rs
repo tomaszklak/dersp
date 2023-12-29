@@ -1,9 +1,9 @@
 use std::{io::Cursor, net::SocketAddr};
 
 use anyhow::{anyhow, bail};
-use codec::{Decode, Encode};
+use codec::Decode;
 use httparse::Status;
-use log::{debug, trace, warn};
+use log::{trace, warn};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{lookup_host, tcp::OwnedWriteHalf, TcpStream},
@@ -13,7 +13,8 @@ use tokio::{
 
 use crate::{
     client::WriteLoopCommands,
-    crypto::{PublicKey, SecretKey, KEY_SIZE},
+    crypto::{PublicKey, SecretKey},
+    inout::DerpReader,
     proto::data::{ForwardPacket, Frame, FrameType, PeerPresent},
     proto::{exchange_keys, read_server_info, write_peer_present, write_watch_conns},
     service::ServiceCommand,
@@ -71,16 +72,22 @@ impl MeshClient {
         let (mut r, mut w) = stream.into_split();
 
         let leftovers = connect_http(&mut r, &mut w).await?;
-        let mut reader = Cursor::new(leftovers).chain(r);
+        let reader = Cursor::new(leftovers).chain(r);
+        let mut derp_reader = DerpReader::new(reader);
 
-        let mesh_peer_pk =
-            exchange_keys(&mut reader, &mut w, self.secret_key, Some(&self.meshkey)).await?;
+        let mesh_peer_pk = exchange_keys(
+            &mut derp_reader,
+            &mut w,
+            self.secret_key,
+            Some(&self.meshkey),
+        )
+        .await?;
 
         mesh_peer_pk_sender
             .send(mesh_peer_pk)
             .map_err(|e| anyhow!("{e}"))?;
 
-        read_server_info(&mut reader).await?;
+        read_server_info(&mut derp_reader).await?;
 
         write_watch_conns(&mut w).await?;
 
@@ -92,7 +99,7 @@ impl MeshClient {
 
         spawn(write_loop(receiver, w));
 
-        if let Err(e) = self.read_loop(reader, sender).await {
+        if let Err(e) = self.read_loop(derp_reader, sender).await {
             warn!("[{mesh_peer_pk:?}] read loop failed: {e}");
             return Err(e);
         }
@@ -100,22 +107,19 @@ impl MeshClient {
         Ok(())
     }
 
-    async fn read_loop(
+    async fn read_loop<T: AsyncRead + Unpin>(
         self,
-        mut reader: impl AsyncRead + Unpin,
+        mut reader: DerpReader<T>,
         sender: Sender<WriteLoopCommands>,
     ) -> anyhow::Result<()> {
-        let mut reading_buffer = [0_u8; 4096];
         loop {
-            reading_buffer.fill(0);
-            reader.read(&mut reading_buffer).await?;
+            let message = reader.get_next_message().await?;
 
-            let frame_type = FrameType::get_frame_type(&reading_buffer);
-            trace!("next frame: {frame_type:?}");
+            trace!("next frame: {:?}", message.ty);
 
-            match frame_type {
+            match message.ty {
                 FrameType::PeerPresent => {
-                    let peer_present = Frame::<PeerPresent>::decode(&mut reading_buffer.as_slice())
+                    let peer_present = Frame::<PeerPresent>::decode(&mut message.buffer.as_slice())
                         .map_err(|_| anyhow!("Decode error"))?
                         .inner
                         .into_inner();
@@ -131,7 +135,7 @@ impl MeshClient {
 
                 FrameType::ForwardPacket => {
                     let forward_packet =
-                        Frame::<ForwardPacket>::decode(&mut reading_buffer.as_slice())
+                        Frame::<ForwardPacket>::decode(&mut message.buffer.as_slice())
                             .map_err(|_| anyhow!("Decode error"))?
                             .inner
                             .into_inner();

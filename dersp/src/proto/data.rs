@@ -272,6 +272,12 @@ pub struct WatchConns {
     pub data: Vec<u8>,
 }
 
+#[derive(Decode)]
+pub struct Header {
+    pub frame_type: FrameType,
+    pub size: u32,
+}
+
 mod tests {
     use super::*;
 
