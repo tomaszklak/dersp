@@ -5,7 +5,7 @@ use httparse::Status;
 use log::{debug, trace, warn};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::{tcp::OwnedWriteHalf, TcpStream},
+    net::{lookup_host, tcp::OwnedWriteHalf, TcpStream},
     spawn,
     sync::mpsc::{channel, Receiver, Sender},
 };
@@ -30,17 +30,22 @@ pub struct MeshClient {
 }
 
 impl MeshClient {
-    pub fn new(
-        addr: SocketAddr,
+    pub async fn new(
+        addr_or_host: &str,
         secret_key: SecretKey,
         meshkey: String,
         command_sender: Sender<ServiceCommand>,
-    ) -> Self {
-        Self {
-            addr,
-            secret_key,
-            meshkey,
-            command_sender,
+    ) -> anyhow::Result<Self> {
+        if let Some(addr) = lookup_host(addr_or_host).await?.next() {
+            debug!("mesh peer {addr_or_host} is in fact: {addr}");
+            Ok(Self {
+                addr,
+                secret_key,
+                meshkey,
+                command_sender,
+            })
+        } else {
+            bail!("Failed to resolve {addr_or_host}");
         }
     }
 

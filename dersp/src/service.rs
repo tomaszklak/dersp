@@ -83,8 +83,9 @@ impl DerpService {
         spawn(command_loop(r, ret.clone()));
         if let Some(meshkey) = meshkey {
             for addr in config.mesh_peers {
-                let peer_client = MeshClient::new(addr, service_sk, meshkey.clone(), s.clone());
-                match peer_client.start().await {
+                let mesh_client =
+                    MeshClient::new(&addr, service_sk, meshkey.clone(), s.clone()).await?;
+                match mesh_client.start().await {
                     Ok((sender, mesh_peer_pk)) => {
                         ret.write().await.mesh.insert(mesh_peer_pk, sender);
                     }
