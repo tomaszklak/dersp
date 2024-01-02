@@ -120,11 +120,8 @@ impl ServerKey {
     }
 
     pub fn validate_magic(&self) -> anyhow::Result<()> {
-        if self.magic != MAGIC {
-            Err(anyhow::anyhow!("Invalid magic {:?}", self.magic))
-        } else {
-            Ok(())
-        }
+        anyhow::ensure!(self.magic == MAGIC, "Invalid magic {:?}", self.magic);
+        Ok(())
     }
 }
 

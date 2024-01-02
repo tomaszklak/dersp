@@ -3,6 +3,7 @@ use std::{io::Cursor, net::SocketAddr};
 use anyhow::{anyhow, bail};
 use codec::Decode;
 use httparse::Status;
+use log::debug;
 use log::{trace, warn};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -10,7 +11,6 @@ use tokio::{
     spawn,
     sync::mpsc::{channel, Receiver, Sender},
 };
-use log::debug;
 
 use crate::{
     client::WriteLoopCommands,

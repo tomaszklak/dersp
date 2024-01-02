@@ -100,7 +100,7 @@ impl Client {
 
                 FrameType::WatchConns => {
                     if !can_mesh {
-                        // RODO: close this connection
+                        // TODO: close this connection
                     } else {
                         command_sender
                             .send(ServiceCommand::SubscribeForPeerChanges(
