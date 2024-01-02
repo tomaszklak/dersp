@@ -1,8 +1,10 @@
 use std::{io::Cursor, net::SocketAddr};
 
 use anyhow::{anyhow, bail};
+use codec::Decode;
 use httparse::Status;
-use log::{debug, trace, warn};
+use log::debug;
+use log::{trace, warn};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{lookup_host, tcp::OwnedWriteHalf, TcpStream},
@@ -12,10 +14,10 @@ use tokio::{
 
 use crate::{
     client::WriteLoopCommands,
-    crypto::{PublicKey, SecretKey, KEY_SIZE},
-    proto_old::{
-        exchange_keys, read_frame, read_server_info, write_frame, write_peer_present, FrameType,
-    },
+    crypto::{PublicKey, SecretKey},
+    inout::DerpReader,
+    proto::data::{ForwardPacket, Frame, FrameType, PeerPresent},
+    proto::{exchange_keys, read_server_info, write_peer_present, write_watch_conns},
     service::ServiceCommand,
 };
 
@@ -71,23 +73,24 @@ impl MeshClient {
         let (mut r, mut w) = stream.into_split();
 
         let leftovers = connect_http(&mut r, &mut w).await?;
-        let mut reader = Cursor::new(leftovers).chain(r);
+        let reader = Cursor::new(leftovers).chain(r);
+        let mut derp_reader = DerpReader::new(reader);
 
-        let mesh_peer_pk = exchange_keys(&mut reader, &mut w, self.secret_key, Some(&self.meshkey))
-            .await
-            .map_err(|e| anyhow!("{e}"))?;
+        let mesh_peer_pk = exchange_keys(
+            &mut derp_reader,
+            &mut w,
+            self.secret_key,
+            Some(&self.meshkey),
+        )
+        .await?;
 
         mesh_peer_pk_sender
             .send(mesh_peer_pk)
             .map_err(|e| anyhow!("{e}"))?;
 
-        read_server_info(&mut reader)
-            .await
-            .map_err(|e| anyhow!("{e}"))?;
+        read_server_info(&mut derp_reader).await?;
 
-        write_frame(&mut w, crate::proto_old::FrameType::WatchConns, Vec::new())
-            .await
-            .map_err(|e| anyhow!("{e}"))?;
+        write_watch_conns(&mut w).await?;
 
         trace!(
             "starting read loop of mesh client {} connected to {mesh_peer_pk} ({})",
@@ -97,7 +100,7 @@ impl MeshClient {
 
         spawn(write_loop(receiver, w));
 
-        if let Err(e) = self.read_loop(reader, sender).await {
+        if let Err(e) = self.read_loop(derp_reader, sender).await {
             warn!("[{mesh_peer_pk:?}] read loop failed: {e}");
             return Err(e);
         }
@@ -105,58 +108,48 @@ impl MeshClient {
         Ok(())
     }
 
-    async fn read_loop(
+    async fn read_loop<T: AsyncRead + Unpin>(
         self,
-        mut reader: impl AsyncRead + Unpin,
+        mut reader: DerpReader<T>,
         sender: Sender<WriteLoopCommands>,
     ) -> anyhow::Result<()> {
         loop {
-            let next_frame = read_frame(&mut reader).await;
-            if let Ok(next_frame) = &next_frame {
-                trace!("next frame: {:?}", next_frame.0);
-            }
+            let message = reader.get_next_message().await?;
 
-            match next_frame? {
-                (FrameType::PeerPresent, buf) => {
-                    let client_pk: PublicKey = buf.try_into().map_err(|e| anyhow!("{e:?}"))?;
-                    trace!("Got peer present for {client_pk}");
+            trace!("next frame: {:?}", message.ty);
+
+            match message.ty {
+                FrameType::PeerPresent => {
+                    let peer_present = Frame::<PeerPresent>::decode(&mut message.buffer.as_slice())
+                        .map_err(|_| anyhow!("Decode error"))?
+                        .inner
+                        .into_inner();
+                    trace!("Got peer present for {}", peer_present.public_key);
                     self.command_sender
-                        .send(ServiceCommand::PeerPresent(client_pk, sender.clone()))
+                        .send(ServiceCommand::PeerPresent(
+                            peer_present.public_key,
+                            sender.clone(),
+                        ))
                         .await
                         .unwrap();
                 }
-                /*
-                        (FrameType::RecvPacket, buf) => {
-                            let sender_pk: PublicKey = buf[..32].try_into().unwrap();
-                            debug!("Got recv packet from sender {sender_pk}");
-                            self.command_sender
-                                .send(ServiceCommand::SendPacket {
-                                    source: todo!(),
-                                    target: sender_pk,
-                                    payload: buf[32..].to_vec(),
-                                })
-                                .await
-                                .unwrap();
-                        }
-                */
-                (FrameType::ForwardPacket, buf) => {
-                    let source_pk: PublicKey = buf.get(..KEY_SIZE).unwrap().try_into().unwrap();
-                    let target_pk: PublicKey = buf
-                        .get(KEY_SIZE..(2 * KEY_SIZE))
-                        .unwrap()
-                        .try_into()
-                        .unwrap();
-                    let payload = buf.get((2 * KEY_SIZE)..).unwrap();
+
+                FrameType::ForwardPacket => {
+                    let forward_packet =
+                        Frame::<ForwardPacket>::decode(&mut message.buffer.as_slice())
+                            .map_err(|_| anyhow!("Decode error"))?
+                            .inner
+                            .into_inner();
                     self.command_sender
                         .send(ServiceCommand::SendPacket {
-                            source: source_pk,
-                            target: target_pk,
-                            payload: payload.to_vec(),
+                            source: forward_packet.source,
+                            target: forward_packet.target,
+                            payload: forward_packet.payload,
                         })
                         .await?;
                 }
+
                 _ => todo!(),
-                // Err(e) => todo!(),
             }
         }
     }

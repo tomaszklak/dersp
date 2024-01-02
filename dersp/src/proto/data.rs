@@ -1,8 +1,10 @@
 use anyhow::Context;
 use codec::{Decode, Encode, SizeWrapper};
 
-use crypto_box::{aead::Aead, SalsaBox};
-use log::{debug, trace};
+use crypto_box::{
+    aead::{Aead, AeadCore},
+    PublicKey as BoxPublicKey, SalsaBox,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::crypto::{PublicKey, SecretKey};
@@ -13,25 +15,25 @@ const MAGIC: [u8; 8] = [0x44, 0x45, 0x52, 0x50, 0xF0, 0x9F, 0x94, 0x91];
 #[derive(Debug, Decode, Encode, PartialEq)]
 pub enum FrameType {
     /// 8B magic + 32B public key + (0+ bytes future use)
-    #[tag(1u8)]
+    #[tag(0x01u8)]
     ServerKey,
     /// 32B pub key + 24B nonce + naclbox(json)
-    #[tag(2)]
+    #[tag(0x02)]
     ClientInfo,
     /// 24B nonce + naclbox(json)
-    #[tag(3)]
+    #[tag(0x03)]
     ServerInfo,
     /// 32B dest pub key + packet bytes
-    #[tag(4)]
+    #[tag(0x04)]
     SendPacket,
     /// v2: 32B src pub key + packet bytes
-    #[tag(5)]
+    #[tag(0x05)]
     RecvPacket,
     /// no payload, no-op (to be replaced with ping/pong)
-    #[tag(6)]
+    #[tag(0x06)]
     KeepAlive,
     /// 1 byte payload: 0x01 or 0x00 for whether this is client's home node
-    #[tag(7)]
+    #[tag(0x07)]
     NotePreferred,
     /// PeerGone is sent from server to client to signal that
     /// a previous sender is no longer connected. That is, if A
@@ -39,37 +41,40 @@ pub enum FrameType {
     /// PeerGone to B so B can forget that a reverse path
     /// exists on that connection to get back to A.
     /// 32B pub key of peer that's gone
-    #[tag(8)]
+    #[tag(0x08)]
     PeerGone,
     /// PeerPresent is like PeerGone, but for other
     /// members of the DERP region when they're meshed up together.
     /// 32B pub key of peer that's connected
-    #[tag(9)]
-    PeerPersistent,
+    #[tag(0x09)]
+    PeerPresent,
+    /// 32B src pub key + 32B dst pub key + packet bytes
+    #[tag(0x0A)]
+    ForwardPacket,
     /// WatchConns is how one DERP node in a regional mesh
     /// subscribes to the others in the region.
     /// There's no payload. If the sender doesn't have permission, the connection
     /// is closed. Otherwise, the client is initially flooded with
     /// PeerPresent for all connected nodes, and then a stream of
     /// PeerPresent & PeerGone has peers connect and disconnect.
-    #[tag(10)]
+    #[tag(0x10)]
     WatchConns,
     /// ClosePeer is a privileged frame type (requires the
     /// mesh key for now) that closes the provided peer's
     /// connection. (To be used for cluster load balancing
     /// purposes, when clients end up on a non-ideal node)
     /// 32B pub key of peer to close.
-    #[tag(11)]
+    #[tag(0x11)]
     ClosePeer,
     /// 8 byte ping payload, to be echoed back in Pong
-    #[tag(12)]
+    #[tag(0x12)]
     Ping,
     /// 8 byte payload, the contents of the ping being replied to
-    #[tag(13)]
+    #[tag(0x13)]
     Pong,
     /// control message for communication with derp. Since these messages are not
     /// for communication with other peers through derp, they don't contain public_key
-    #[tag(14)]
+    #[tag(0x14)]
     ControlMessage,
 
     #[unknown]
@@ -113,6 +118,11 @@ impl ServerKey {
             inner: SizeWrapper::new(self),
         }
     }
+
+    pub fn validate_magic(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(self.magic == MAGIC, "Invalid magic {:?}", self.magic);
+        Ok(())
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +140,43 @@ pub struct ClientInfo {
 }
 
 impl ClientInfo {
+    pub fn new(
+        secret_key: SecretKey,
+        server_key: PublicKey,
+        meshkey: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        let secret_key = secret_key.into();
+        let public_key = BoxPublicKey::from(&secret_key);
+        let server_key = server_key.into();
+
+        let mut rng = rand_core::OsRng;
+        let nonce = SalsaBox::generate_nonce(&mut rng);
+        let plain_text: Vec<u8> = if let Some(meshkey) = meshkey {
+            format!("{{\"version\": 2, \"meshKey\": \"{meshkey}\"}}")
+                .as_bytes()
+                .to_vec()
+        } else {
+            b"{\"version\": 2, \"meshKey\": \"\"}".to_vec()
+        };
+
+        let b = SalsaBox::new(&server_key, &secret_key);
+
+        let cipher_text = b
+            .encrypt(&nonce, &plain_text[..])
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        let nonce: [u8; 24] = nonce
+            .to_vec()
+            .try_into()
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+
+        Ok(ClientInfo {
+            public_key: public_key.into(),
+            nonce,
+            cipher_text,
+        })
+    }
+
     pub fn complete(&self, sk: &SecretKey) -> anyhow::Result<CompleteClientInfo> {
         let b = SalsaBox::new(&self.public_key.into(), &sk.into());
         let plain_text = b.decrypt(
@@ -144,6 +191,13 @@ impl ClientInfo {
             nonce: self.nonce,
             payload,
         })
+    }
+
+    pub fn frame(self) -> Frame<ClientInfo> {
+        Frame {
+            frame_type: FrameType::ClientInfo,
+            inner: SizeWrapper::new(self),
+        }
     }
 }
 
@@ -166,6 +220,58 @@ impl ServerInfo {
             inner: SizeWrapper::new(self),
         }
     }
+}
+
+#[derive(Debug, Decode, Encode)]
+pub struct SendPacket {
+    pub target: PublicKey,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Debug, Decode, Encode)]
+pub struct RecvPacket {
+    pub target: PublicKey,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Decode, Encode)]
+pub struct ForwardPacket {
+    pub source: PublicKey,
+    pub target: PublicKey,
+    pub payload: Vec<u8>,
+}
+
+impl ForwardPacket {
+    pub fn new(source: PublicKey, target: PublicKey, payload: Vec<u8>) -> Self {
+        ForwardPacket {
+            source,
+            target,
+            payload,
+        }
+    }
+
+    pub fn frame(self) -> Frame<ForwardPacket> {
+        Frame {
+            frame_type: FrameType::ForwardPacket,
+            inner: SizeWrapper::new(self),
+        }
+    }
+}
+
+#[derive(Debug, Decode, Encode)]
+pub struct PeerPresent {
+    pub public_key: PublicKey,
+}
+
+#[derive(Default, Decode, Encode)]
+pub struct WatchConns {
+    pub data: Vec<u8>,
+}
+
+#[derive(Decode)]
+pub struct Header {
+    pub frame_type: FrameType,
+    pub size: u32,
 }
 
 mod tests {
