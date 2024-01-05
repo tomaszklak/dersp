@@ -163,6 +163,11 @@ async fn command_loop(
                 target,
                 payload,
             }) => {
+                // TODO: to make this faster client/mesh_client should have direct access to
+                // the `peers_sinks`, instead of sending requests to service. This way clients
+                // communication will not put preasure on the services queue. With curren aproach,
+                // sink to serviced quickly will block whole service. After this change, it will
+                // only impact senders wanting to communicate with it.
                 debug!("send packet to {target:?}");
                 let sink = match service.read().await.peers_sinks.get(&target) {
                     Some(sink) => sink.clone(),
